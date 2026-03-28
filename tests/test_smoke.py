@@ -170,8 +170,8 @@ def test_smoke_run():
             ds = json.load(f)
         assert "attention_statistics" in ds
         astats = ds["attention_statistics"]
-        assert "entropy_full_mean" in astats
-        assert "entropy_no_sink_local_mean" in astats
+        assert "full_entropy_mean" in astats
+        assert "nonlocal_entropy_mean" in astats
 
         # Check spec has tasks + date + head_mode
         with open(out / "spec.json") as f:

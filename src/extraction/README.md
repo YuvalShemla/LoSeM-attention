@@ -22,52 +22,36 @@ Both also need `pyyaml` (for config loading).
 
 ## How It Works
 
-### Phase 1 — All-Heads Scout
+Single-command pipeline per task:
 
-First it will (Todo exaplin it will load the benchmarks, and add a section explaianing about the benchmarks Extracts ALL 32 Q heads + 8 KV heads across 4 layers,
-for 1 example per task. Computes per-head attention
-statistics (entropy, top-100 mass) to identify which
-heads have the most/least concentrated attention.
+1. **Scout pass** — extracts ALL 32 Q heads + 8 KV heads
+   for the shortest example. Computes per-head attention
+   statistics (entropy, top-% mass). No .pt files saved.
+
+2. **Head selection** — picks 5 heads at percentile
+   positions [0, 25, 50, 75, 100] of `nonlocal_entropy`.
+
+3. **Vectors pass** — extracts only the selected heads
+   for N examples per task (default 5). Saves .pt files.
 
 ```bash
-python -m src.extraction.extract_vectors --phase 1
+python -m src.extraction.extract_vectors
 ```
 
 **Output:**
 ```
-data/vectors/llama3.1_8b/all_heads/{task}/
-  ex_000/
-    layer_00.pt    # All heads, bfloat16
+data/vectors/llama3.1_8b/{task}/
+  ex_000/ ... ex_004/
+    layer_00.pt    # Only selected heads, bfloat16
     layer_17.pt
-    layer_19.pt
-    layer_31.pt
+    ...
     example.json   # Per-example metadata
+  metadata.json    # Task metadata + selected_heads
 
 data/head_statistics/llama3.1_8b/
-  math_calc.json   # Per-head entropy stats
+  math_calc.json   # Per-head entropy stats + selection info
   code_run.json
   ...
-```
-
-### Phase 2 — Selected Heads
-
-Uses Phase 1 statistics to pick 3 heads:
-- **Highest entropy** (most diffuse attention)
-- **Lowest entropy** (most concentrated)
-- **Median entropy** (typical behavior)
-
-Extracts only those heads, for 10 examples per task.
-
-```bash
-python -m src.extraction.extract_vectors --phase 2
-```
-
-**Output:**
-```
-data/vectors/llama3.1_8b/selected_heads/{task}/
-  ex_000/ ... ex_009/
-    layer_00.pt    # Only selected heads
-    ...
 ```
 
 ## .pt File Format
@@ -87,21 +71,13 @@ Each `layer_XX.pt` contains a dict of bfloat16 tensors:
 ## Configuration
 
 All parameters in `src/extraction/extraction_config.yaml`:
+- `extraction.examples_per_task`: default 5
 - `extraction.layers`: which layers to extract
 - `extraction.max_length`: context window (131072)
-- `extraction.phase1.examples_per_task`: default 1
-- `extraction.phase2.examples_per_task`: default 10
+- `head_selection.mode`: "auto" or explicit pairs
+- `head_selection.metric`: ranking metric (default `nonlocal_entropy`)
+- `head_selection.percentiles`: which percentile positions to select
 - `model.*`: model name, head counts, RoPE theta
-
-## Storage Estimates
-
-| Phase | Total |
-|-------|------:|
-| Phase 1 (all heads, 1 ex/task) | ~46 GB |
-| Phase 2 (3 heads, 10 ex/task) | ~79 GB |
-| **Total** | **~125 GB** |
-
-2 layers instead of 4 halves this to ~63 GB.
 
 ## Tasks
 
@@ -118,7 +94,7 @@ All parameters in `src/extraction/extraction_config.yaml`:
 
 | File | Purpose |
 |------|---------|
-| `extract_vectors.py` | CLI + Phase 1/Phase 2 orchestration + head stats |
+| `extract_vectors.py` | CLI + unified extraction orchestration + head stats |
 | `load_benchmarks.py` | HuggingFace dataset loaders |
 | `cuda_extract.py` | CUDA backend (HF hooks) |
 | `mlx_extract.py` | MLX backend (layer-by-layer) |

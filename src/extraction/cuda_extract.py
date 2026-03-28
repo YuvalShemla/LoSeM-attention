@@ -207,5 +207,7 @@ def extract_layer_qkv_cuda(
         del q_rope, k_rope
         torch.cuda.empty_cache()
 
+    import gc
+    gc.collect()
     torch.cuda.empty_cache()
     return results

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Visualize pre-computed head statistics from Phase 1 extraction.
+Visualize pre-computed head statistics from extraction.
 
 Reads head_statistics JSON files and produces:
   1. Per-task summary box plots (distribution across all heads)
@@ -42,12 +42,25 @@ C_NSL = "#DD8452"
 
 # ── Data loading ──────────────────────────────────
 
-def load_all_stats(stats_dir: Path) -> dict:
+def load_all_stats(stats_dir: Path) -> tuple:
+    """Load stats JSONs. Returns (stats, example_meta).
+
+    example_meta: {task: (example_id, seq_len)} built
+    from embedded metadata when available.
+    """
     stats = {}
+    example_meta = {}
     for p in sorted(stats_dir.glob("*.json")):
         with open(p) as f:
-            stats[p.stem] = json.load(f)
-    return stats
+            data = json.load(f)
+        meta = data.pop("metadata", None)
+        if meta:
+            example_meta[p.stem] = (
+                meta.get("example_id", ""),
+                meta.get("sequence_length", 0),
+            )
+        stats[p.stem] = data
+    return stats, example_meta
 
 
 def collect_all_values(task_stats: dict, metric: str) -> list:
@@ -76,8 +89,8 @@ def extract_layer_averages(task_stats: dict) -> dict:
 
 # ── Task-level box plots ─────────────────────────
 
-def _task_boxplot(ax, tasks, data_full, data_nsl, ylabel, title, ylim=None):
-    """Paired box plots comparing full vs no-sink-local per task."""
+def _task_boxplot(ax, tasks, data_full, data_nsl, ylabel, title, ylim=None, example_meta=None):
+    """Paired box plots comparing full vs nonlocal per task."""
     positions_full = []
     positions_nsl = []
     spacing = 1.0
@@ -142,14 +155,21 @@ def _task_boxplot(ax, tasks, data_full, data_nsl, ylabel, title, ylim=None):
 
     centers = [i * spacing for i in range(len(tasks))]
     ax.set_xticks(centers)
-    ax.set_xticklabels(tasks, rotation=15, ha="right")
+    em = example_meta or {}
+    xlabels = []
+    for t in tasks:
+        if t in em:
+            ex_id, n_tok = em[t]
+            xlabels.append(f"{t}\n{ex_id}  ({n_tok:,} tok)")
+        else:
+            xlabels.append(t)
+    ax.set_xticklabels(xlabels, fontsize=9)
     ax.set_ylabel(ylabel)
-    ax.set_title(title, fontsize=13, fontweight="bold", pad=20)
+    ax.set_title(f"{title} (1024 heads)", fontsize=13, fontweight="bold", pad=20)
     ax.text(
         0.5, 1.02,
         "Box: Q25\u2013Q75  |  Line: median  |  "
-        "\u25c7: mean  |  Whiskers: 1.5\u00d7IQR  |  "
-        "Dots: outliers",
+        "\u25c7: mean  |  Dots: outliers",
         transform=ax.transAxes, ha="center", va="bottom",
         fontsize=8.5, color="#888888",
     )
@@ -163,39 +183,35 @@ def _task_boxplot(ax, tasks, data_full, data_nsl, ylabel, title, ylim=None):
 
     legend_handles = [
         mpatches.Patch(facecolor=C_FULL, alpha=0.8, label="Full"),
-        mpatches.Patch(facecolor=C_NSL, alpha=0.8, label="No sink/local"),
-        plt.Line2D(
-            [], [], marker="D", color="gray", markersize=5,
-            markerfacecolor="white", markeredgecolor="gray",
-            linestyle="None", label="Mean",
-        ),
+        mpatches.Patch(facecolor=C_NSL, alpha=0.8, label="Nonlocal"),
     ]
     ax.legend(handles=legend_handles, fontsize=9)
 
 
-def plot_task_summary_entropy(all_stats: dict, out_path: Path):
+def plot_task_summary_entropy(all_stats: dict, out_path: Path, example_meta: dict = None):
     tasks = list(all_stats.keys())
-    data_full = [collect_all_values(all_stats[t], "entropy_full") for t in tasks]
-    data_nsl = [collect_all_values(all_stats[t], "entropy_no_sink_local") for t in tasks]
+    data_full = [collect_all_values(all_stats[t], "full_entropy") for t in tasks]
+    data_nsl = [collect_all_values(all_stats[t], "nonlocal_entropy") for t in tasks]
 
     fig, ax = plt.subplots(figsize=(8, 5.5))
     _task_boxplot(ax, tasks, data_full, data_nsl,
-                  "Entropy (nats)", "Entropy Distribution per Task")
+                  "Entropy (nats)", "Entropy Distribution per Task",
+                  example_meta=example_meta)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
-def plot_task_summary_mass(all_stats: dict, pct: int, out_path: Path):
+def plot_task_summary_mass(all_stats: dict, pct: int, out_path: Path, example_meta: dict = None):
     tasks = list(all_stats.keys())
-    data_full = [collect_all_values(all_stats[t], f"top{pct}pct_mass_full") for t in tasks]
-    data_nsl = [collect_all_values(all_stats[t], f"top{pct}pct_mass_no_sink_local") for t in tasks]
+    data_full = [collect_all_values(all_stats[t], f"full_top{pct}pct_mass") for t in tasks]
+    data_nsl = [collect_all_values(all_stats[t], f"nonlocal_top{pct}pct_mass") for t in tasks]
 
     fig, ax = plt.subplots(figsize=(8, 5.5))
     _task_boxplot(ax, tasks, data_full, data_nsl,
                   f"Top {pct}% Mass",
                   f"Top {pct}% Attention Mass Distribution per Task",
-                  ylim=(-0.05, 1.08))
+                  ylim=(-0.05, 1.08), example_meta=example_meta)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -215,7 +231,7 @@ def plot_layer_bars(task: str, layer_avgs: dict,
     w = 0.4
     fig, ax = plt.subplots(figsize=(14, 5))
     ax.bar(x - w / 2, full, w, label="Full", color=C_FULL)
-    ax.bar(x + w / 2, nsl, w, label="No sink/local", color=C_NSL)
+    ax.bar(x + w / 2, nsl, w, label="Nonlocal", color=C_NSL)
     ax.set_xticks(x)
     ax.set_xticklabels([str(l) for l in layers], fontsize=8)
     ax.set_xlabel("Layer")
@@ -233,7 +249,7 @@ def plot_layer_bars(task: str, layer_avgs: dict,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize head statistics from Phase 1"
+        description="Visualize head statistics"
     )
     parser.add_argument(
         "--stats-dir", type=Path, required=True,
@@ -250,12 +266,17 @@ def main():
         print(f"ERROR: {args.stats_dir} not found")
         sys.exit(1)
 
-    all_stats = load_all_stats(args.stats_dir)
+    all_stats, example_meta = load_all_stats(
+        args.stats_dir,
+    )
     if not all_stats:
         print(f"No JSON files in {args.stats_dir}")
         sys.exit(1)
 
     print(f"Tasks: {list(all_stats.keys())}")
+    if example_meta:
+        print(f"Metadata found for: "
+              f"{list(example_meta.keys())}")
 
     out = args.out_dir
     out.mkdir(parents=True, exist_ok=True)
@@ -264,9 +285,18 @@ def main():
 
     # Task-level box plots
     print("Saving task summary box plots...")
-    plot_task_summary_entropy(all_stats, out / "task_entropy.png")
-    plot_task_summary_mass(all_stats, 1, out / "task_top1pct_mass.png")
-    plot_task_summary_mass(all_stats, 5, out / "task_top5pct_mass.png")
+    plot_task_summary_entropy(
+        all_stats, out / "task_entropy.png",
+        example_meta=example_meta,
+    )
+    plot_task_summary_mass(
+        all_stats, 1, out / "task_top1pct_mass.png",
+        example_meta=example_meta,
+    )
+    plot_task_summary_mass(
+        all_stats, 5, out / "task_top5pct_mass.png",
+        example_meta=example_meta,
+    )
 
     # Per-task layer bar plots
     for task, stats in all_stats.items():
@@ -277,20 +307,20 @@ def main():
 
         plot_layer_bars(
             task, layer_avgs,
-            "entropy_full", "entropy_no_sink_local",
+            "full_entropy", "nonlocal_entropy",
             "Entropy (nats)", "Average Entropy by Layer",
             td / "layer_entropy.png",
         )
         plot_layer_bars(
             task, layer_avgs,
-            "top1pct_mass_full", "top1pct_mass_no_sink_local",
+            "full_top1pct_mass", "nonlocal_top1pct_mass",
             "Top 1% Mass", "Average Top 1% Mass by Layer",
             td / "layer_top1pct_mass.png",
             ylim=(0, 1.05),
         )
         plot_layer_bars(
             task, layer_avgs,
-            "top5pct_mass_full", "top5pct_mass_no_sink_local",
+            "full_top5pct_mass", "nonlocal_top5pct_mass",
             "Top 5% Mass", "Average Top 5% Mass by Layer",
             td / "layer_top5pct_mass.png",
             ylim=(0, 1.05),

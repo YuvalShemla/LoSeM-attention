@@ -72,21 +72,42 @@ def load_pt_example(
     return data
 
 
+def _task_dir(
+    vectors_dir: Path,
+    task: str,
+    phase: Optional[str] = None,
+) -> Path:
+    """Resolve task directory: flat or phase-based."""
+    if phase is None:
+        # Flat layout: {vectors_dir}/{task}/
+        flat = vectors_dir / task
+        if flat.exists():
+            return flat
+        # Fall back to old layout
+        for p in ["selected_heads", "all_heads"]:
+            old = vectors_dir / p / task
+            if old.exists():
+                return old
+        return flat  # default to flat (will be empty)
+    return vectors_dir / phase / task
+
+
 def discover_examples(
     vectors_dir: Path,
     task: str,
-    phase: str = "all_heads",
+    phase: Optional[str] = None,
 ) -> List[Path]:
     """
     Find all example directories for a task.
 
     Returns sorted list of ex_NNN/ directories.
+    phase=None uses flat layout with fallback.
     """
-    task_dir = vectors_dir / phase / task
-    if not task_dir.exists():
+    task_d = _task_dir(vectors_dir, task, phase)
+    if not task_d.exists():
         return []
     dirs = sorted(
-        d for d in task_dir.iterdir()
+        d for d in task_d.iterdir()
         if d.is_dir() and d.name.startswith("ex_")
     )
     return dirs
@@ -98,7 +119,7 @@ def load_examples(
     layer: int,
     head: int,
     kv_head: int,
-    phase: str = "selected_heads",
+    phase: Optional[str] = None,
     max_examples: Optional[int] = None,
 ) -> Iterator[Dict]:
     """
@@ -106,6 +127,7 @@ def load_examples(
 
     Yields dicts with Q, K, V, example_id, task,
     layer, head — compatible with the experiment runner.
+    phase=None uses flat layout with fallback.
     """
     ex_dirs = discover_examples(
         vectors_dir, task, phase,
@@ -143,12 +165,12 @@ def load_examples(
 def load_task_metadata(
     vectors_dir: Path,
     task: str,
-    phase: str = "all_heads",
+    phase: Optional[str] = None,
 ) -> Dict:
     """Load task-level metadata.json if present."""
-    path = (
-        vectors_dir / phase / task / "metadata.json"
-    )
+    path = _task_dir(
+        vectors_dir, task, phase,
+    ) / "metadata.json"
     if not path.exists():
         return {}
     with open(path) as f:
@@ -158,7 +180,7 @@ def load_task_metadata(
 def count_examples(
     vectors_dir: Path,
     task: str,
-    phase: str = "all_heads",
+    phase: Optional[str] = None,
 ) -> int:
     """Count example directories for a task."""
     return len(discover_examples(

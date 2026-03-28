@@ -1,7 +1,7 @@
 # Head Statistics
 
-Per-head attention statistics from Phase 1 extraction.
-Used to select representative heads for Phase 2.
+Per-head attention statistics from the scout pass.
+Used to select representative heads for vector extraction.
 
 ## Structure
 
@@ -20,16 +20,29 @@ head_statistics/
 
 ```json
 {
-  "layer_17": {
+  "metadata": {
+    "model": "meta-llama/Meta-Llama-3.1-8B",
+    "backend": "cuda",
+    "task": "math_calc",
+    "scout_examples": ["math_calc_0"],
+    "sequence_lengths": [45018],
+    "selected_heads": [
+      {"layer": 5, "q_head": 12, "kv_head": 1, "nonlocal_entropy": 1.23},
+      ...
+    ]
+  },
+  "layer_0": {
     "head_0": {
-      "entropy_full": 5.23,
-      "entropy_no_sink_local": 4.81,
-      "top100_mass_full": 0.42,
-      "top100_mass_no_sink_local": 0.31
+      "full_entropy": 2.74,
+      "nonlocal_entropy": 8.17,
+      "full_top1pct_mass": 0.97,
+      "nonlocal_top1pct_mass": 0.52,
+      "full_top5pct_mass": 0.99,
+      "nonlocal_top5pct_mass": 0.82
     },
     "head_1": { ... }
   },
-  "layer_19": { ... }
+  "layer_1": { ... }
 }
 ```
 
@@ -37,21 +50,26 @@ head_statistics/
 
 | Metric | Description |
 |--------|-------------|
-| `entropy_full` | Shannon entropy over all causal keys |
-| `entropy_no_sink_local` | Entropy excluding sink (pos 0) and last 1024 positions |
-| `top100_mass_full` | Fraction of attention in top 100 keys |
-| `top100_mass_no_sink_local` | Same, excluding sink and local window |
+| `full_entropy` | Shannon entropy over all causal keys |
+| `nonlocal_entropy` | Entropy excluding sink (pos 0) and last 1024 positions |
+| `full_top1pct_mass` | Fraction of attention in top 1% of keys |
+| `nonlocal_top1pct_mass` | Same, excluding sink and local window |
+| `full_top5pct_mass` | Fraction of attention in top 5% of keys |
+| `nonlocal_top5pct_mass` | Same, excluding sink and local window |
 
-Each metric is averaged over ~50 sampled query
-positions from the valid range.
+Each metric is averaged over the last N query positions
+(configured via `head_statistics.n_queries`).
 
-## Head Selection for Phase 2
+## Head Selection
 
-Three heads are selected:
-1. **Max entropy** — most diffuse attention
-2. **Min entropy** — most concentrated
-3. **Median entropy** — typical behavior
+Five heads are selected at percentile positions
+[0, 25, 50, 75, 100] of `nonlocal_entropy`:
+1. **P0** — most concentrated attention (min entropy)
+2. **P25** — below-average diffusion
+3. **P50** — median behavior
+4. **P75** — above-average diffusion
+5. **P100** — most diffuse attention (max entropy)
 
-Selection uses `entropy_no_sink_local` to isolate
+Selection uses `nonlocal_entropy` to isolate
 "global" attention behavior from the sink and local
 window effects.

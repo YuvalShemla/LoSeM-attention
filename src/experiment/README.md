@@ -26,7 +26,7 @@ Three knobs control the experiment scope:
 
 ### Head Modes
 
-**`all_heads`** — Phase 1 data. Runs every Q head (32)
+**`all_heads`** — Runs every Q head (32)
 for each layer in the `layers` list. Good for broad
 scout runs or head comparison.
 
@@ -37,10 +37,10 @@ experiment:
   n_examples: 1
 ```
 
-**`selected_heads`** — Phase 2 data. Reads which
-(layer, head) combos to use from each task's
-`metadata.json`. This is the default for main
-experiments after head selection.
+**`selected_heads`** — Reads which (layer, head)
+combos to use from each task's `metadata.json`.
+This is the default for main experiments after
+head selection.
 
 ```yaml
 experiment:

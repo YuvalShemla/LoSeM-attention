@@ -43,8 +43,7 @@ exploration:
   # sink tokens and local window).
   n_queries: 200
 
-  # Which head to analyze. Exploration always uses
-  # Phase 1 (all_heads) data.
+  # Which head to analyze.
   layer: 17
   q_head: 0
   kv_head: 0

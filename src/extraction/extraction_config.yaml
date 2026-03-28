@@ -64,43 +64,35 @@ prompt_template: "Context: {context}\n\nQuestion: {question}\n\nAnswer:"
 
 # ── Extraction ──
 extraction:
-  max_length: 131072          # max tokens (128K)
+  examples_per_task: 5      # examples to extract per task
+  max_length: 131072        # max tokens (128K)
   storage_format: "pt_bfloat16"
-  store_raw_vectors: true     # pre-RoPE Q and K
-  store_rope_vectors: true    # post-RoPE Q and K
-  layers: "all"              # all 32 layers (or e.g. [0, 17, 19, 31] for specific ones)
+  store_raw_vectors: true   # pre-RoPE Q and K
+  store_rope_vectors: true  # post-RoPE Q and K
+  layers: "all"             # all 32 layers (or e.g. [0, 17, 19, 31] for specific ones)
 
 # ═══════════════════════════════════════════════════
-# Extraction Phases
+# Head Selection
 # ═══════════════════════════════════════════════════
 #
-# Two-step workflow:
-#   Phase 1: all heads, few examples → head statistics.
-#   Phase 2: selected heads, more examples.
+# Stats computed from the first (shortest) example per
+# task, all heads. Selected heads are then extracted for
+# all examples.
 #
-# If you already know which heads you want, skip
-# Phase 1 and set phase2.heads to an explicit list.
+# "auto": compute stats from scout example, select by
+#         percentile (default)
+# Or explicit [layer, q_head] pairs to skip the scout pass:
+#   explicit: [[17, 5], [19, 12]]
 #
-
-# ── Phase 1: All-Heads Scout ──
-phase1:
-  examples_per_task: 1        # 1 example per task
-
-# ── Phase 2: Selected Heads ──
-# heads: "from_stats" — use Phase 1 statistics (default)
-#        "all"        — extract all heads again
-#        [[17, 5], [19, 12]] — explicit [layer, q_head] pairs
-phase2:
-  examples_per_task: 10       # 10 examples per task
-  heads: "from_stats"
-  selection:
-    metric: "no_sink_local"   # "no_sink_local" or "full"
-    n_min_entropy: 1          # most concentrated heads
-    n_median_entropy: 1       # typical heads
-    n_max_entropy: 1          # most diffuse heads
+head_selection:
+  mode: "auto"
+  metric: "nonlocal_entropy"    # ranking metric for percentile selection
+  # Percentile positions (0=min entropy/most concentrated,
+  # 100=max/most diffuse)
+  percentiles: [0, 25, 50, 75, 100]   # -> 5 heads
 
 # ── Head Statistics ──
-# Computed during Phase 1 to profile every head.
+# Computed during the scout pass to profile every head.
 # Stats are averaged over the last n_queries positions.
 head_statistics:
   top_pct_for_mass: [1, 5]    # compute mass in top 1% and top 5%

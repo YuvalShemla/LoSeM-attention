@@ -278,9 +278,14 @@ class Experiment:
                 self.vectors_dir, task, phase,
             )
             if n_available == 0:
+                if phase is None:
+                    loc = f"{self.vectors_dir}/{task}/"
+                else:
+                    loc = (f"{self.vectors_dir}/"
+                           f"{phase}/{task}/")
                 raise FileNotFoundError(
                     f"No data for task '{task}' in "
-                    f"{self.vectors_dir}/{phase}/{task}/. "
+                    f"{loc}. "
                     f"Run the extraction pipeline first."
                 )
             if n_available < self.n_examples:
@@ -412,7 +417,7 @@ class Experiment:
             agg, task_dir,
             self.config.get("plotting", {}),
             self.budgets, families,
-            title=f"{task} ({phase})",
+            title=f"{task} ({phase or 'flat'})",
             n_queries=n_total,
         )
 
@@ -444,17 +449,17 @@ class Experiment:
                 "entropy=%.2f±%.2f, "
                 "top1pct_mass=%.3f±%.3f",
                 qstats.get(
-                    "entropy_no_sink_local_mean", 0
+                    "nonlocal_entropy_mean", 0
                 ),
                 qstats.get(
-                    "entropy_no_sink_local_std", 0
+                    "nonlocal_entropy_std", 0
                 ),
                 qstats.get(
-                    "top1pct_mass_no_sink_local_mean",
+                    "nonlocal_top1pct_mass_mean",
                     0,
                 ),
                 qstats.get(
-                    "top1pct_mass_no_sink_local_std",
+                    "nonlocal_top1pct_mass_std",
                     0,
                 ),
             )
@@ -477,6 +482,8 @@ class Experiment:
 
         Returns (phase_str, list of
                  (layer, q_head, kv_head)).
+        phase is None for flat layout, or a string
+        for legacy phase-based layout.
         """
         mode = self.head_mode
 
@@ -496,16 +503,29 @@ class Experiment:
             return phase, triples
 
         if mode == "selected_heads":
-            sel_dir = (
+            # Try flat layout first
+            flat_mp = (
+                self.vectors_dir / task
+                / "metadata.json"
+            )
+            # Fall back to old phase-based layout
+            old_mp = (
                 self.vectors_dir
                 / "selected_heads" / task
+                / "metadata.json"
             )
-            mp = sel_dir / "metadata.json"
-            if not sel_dir.exists() or not mp.exists():
+            if flat_mp.exists():
+                mp = flat_mp
+                phase = None
+            elif old_mp.exists():
+                mp = old_mp
+                phase = "selected_heads"
+            else:
                 raise FileNotFoundError(
                     f"head_mode='selected_heads' but "
-                    f"no metadata at {mp}. Run Phase 2 "
-                    f"extraction first, or switch to "
+                    f"no metadata at {flat_mp} or "
+                    f"{old_mp}. Run the extraction "
+                    f"pipeline first, or switch to "
                     f"'all_heads' or 'custom'."
                 )
             with open(mp) as f:
@@ -516,7 +536,7 @@ class Experiment:
                     f"metadata.json for {task} has no "
                     f"selected_heads list."
                 )
-            return "selected_heads", [
+            return phase, [
                 (s["layer"], s["q_head"],
                  s["kv_head"])
                 for s in sel
@@ -547,12 +567,19 @@ class Experiment:
         return 3  # typical selected_heads count
 
     def _detect_phase(self, task):
-        """Check which phase directory exists."""
+        """Check which directory layout exists.
+
+        Returns None for flat layout, or phase string.
+        """
+        # Flat layout first
+        flat = self.vectors_dir / task
+        if flat.exists():
+            return None
         for phase in ["selected_heads", "all_heads"]:
             d = self.vectors_dir / phase / task
             if d.exists():
                 return phase
-        return "all_heads"
+        return None
 
     # ── Plot families ───────────────────────────────
 

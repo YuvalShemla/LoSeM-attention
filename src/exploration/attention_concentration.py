@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from ..core import (
-    softmax, top_k_mass, no_sink_local_mask,
+    softmax, top_k_mass, nonlocal_mask,
     concentration_curve,
 )
 from ..experiment.plotting import (

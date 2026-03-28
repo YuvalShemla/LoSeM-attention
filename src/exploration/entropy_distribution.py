@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from ..core import (
-    softmax, entropy_nats, no_sink_local_mask,
+    softmax, entropy_nats, nonlocal_mask,
 )
 from ..experiment.plotting import (
     setup_style, save_figure,
@@ -38,8 +38,8 @@ def compute_entropy_data(
     """
     results = {
         "positions": query_positions,
-        "entropy_full": [],
-        "entropy_no_sink_local": [],
+        "full_entropy": [],
+        "nonlocal_entropy": [],
     }
 
     for qpos in query_positions:
@@ -49,22 +49,22 @@ def compute_entropy_data(
         logits = (q @ keys.T) / np.sqrt(head_dim)
         weights = softmax(logits)
 
-        results["entropy_full"].append(
+        results["full_entropy"].append(
             entropy_nats(weights)
         )
 
-        mask = no_sink_local_mask(
+        mask = nonlocal_mask(
             n, n_sink, local_window,
         )
         w_masked = weights[mask]
         total = np.sum(w_masked)
         if total > 1e-10:
             w_normed = w_masked / total
-            results["entropy_no_sink_local"].append(
+            results["nonlocal_entropy"].append(
                 entropy_nats(w_normed)
             )
         else:
-            results["entropy_no_sink_local"].append(
+            results["nonlocal_entropy"].append(
                 0.0
             )
 
@@ -89,8 +89,8 @@ def plot_entropy(
     )
 
     pos = data["positions"]
-    e_full = data["entropy_full"]
-    e_no_sl = data["entropy_no_sink_local"]
+    e_full = data["full_entropy"]
+    e_no_sl = data["nonlocal_entropy"]
 
     ax1.plot(
         pos, e_full, label="Full", lw=1.5,

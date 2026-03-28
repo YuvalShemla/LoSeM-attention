@@ -2,32 +2,35 @@
 """
 Unified extraction pipeline for attention vectors.
 
-Auto-detects CUDA or MLX. Two phases:
+Auto-detects CUDA or MLX. Single-command workflow:
 
-  Phase 1: All heads, few examples -> head statistics.
-  Phase 2: Selected heads, more examples.
-           Supports "from_stats", "all", or explicit
-           [layer, head] pairs via config.
+  Scout pass:  extract ALL heads for shortest example
+               -> head statistics + head selection
+  Vectors pass: extract ONLY selected heads for N examples
 
 Usage:
-  python -m src.extraction.extract_vectors --phase 1
-  python -m src.extraction.extract_vectors --phase 2
+  python -m src.extraction.extract_vectors
+  python -m src.extraction.extract_vectors --config path/to/config.yaml
 """
 
 import argparse
+import gc
 import json
 import os
 import sys
 import numpy as np
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 from ..core import (
     softmax, entropy_nats, top_pct_mass,
-    no_sink_local_mask, attention_stats_for_query,
+    nonlocal_mask, attention_stats_for_query,
 )
 from .load_benchmarks import (
-    load_task, save_benchmark_examples, TASK_CONFIG,
+    load_task, save_benchmark_examples,
+    format_prompt, tokenize_and_truncate,
+    TASK_CONFIG,
 )
 from .save_utils import (
     save_task_metadata, extract_and_save_examples,
@@ -52,12 +55,11 @@ def compute_head_statistics(
     seq_len = Q_all.shape[0]
     n_q = min(n_queries, seq_len)
     if n_q <= 0:
-        zero = {"entropy_full": 0.0,
-                "entropy_no_sink_local": 0.0}
+        zero = {"full_entropy": 0.0,
+                "nonlocal_entropy": 0.0}
         for pct in top_pcts:
-            label = f"top{pct}pct"
-            zero[f"{label}_mass_full"] = 1.0
-            zero[f"{label}_mass_no_sink_local"] = 1.0
+            zero[f"full_top{pct}pct_mass"] = 1.0
+            zero[f"nonlocal_top{pct}pct_mass"] = 1.0
         return zero
 
     start = max(0, seq_len - n_q)
@@ -78,69 +80,65 @@ def compute_head_statistics(
     }
 
 
-def select_heads_for_phase2(
+def select_heads_by_percentile(
     stats: Dict,
-    metric: str = "entropy_no_sink_local",
-    n_min: int = 1,
-    n_median: int = 1,
-    n_max: int = 1,
+    metric: str = "nonlocal_entropy",
+    percentiles: List[int] = (0, 25, 50, 75, 100),
 ) -> List[Tuple[int, int]]:
     """
-    Select heads by entropy ranking.
+    Select heads at entropy percentile positions.
 
-    stats: {layer_N: {head_M: {metric: value}}}
-    Returns list of (layer, head) tuples.
+    Ranks all (layer, head) pairs by metric value
+    ascending. Returns deduplicated (layer, q_head)
+    tuples.
     """
     entries = []
     for layer_key, heads in stats.items():
         layer = int(layer_key.split("_")[1])
         for head_key, head_stats in heads.items():
             head = int(head_key.split("_")[1])
-            val = head_stats.get(metric, 0.0)
-            entries.append((layer, head, val))
+            entries.append(
+                (layer, head,
+                 head_stats.get(metric, 0.0))
+            )
 
     if not entries:
         return []
 
     entries.sort(key=lambda x: x[2])
     n = len(entries)
-    used = set()
+    seen = set()
     selected = []
-
-    def _pick(idx):
+    for pct in percentiles:
+        idx = round(pct / 100 * (n - 1))
         idx = max(0, min(idx, n - 1))
-        if idx not in used:
-            used.add(idx)
-            e = entries[idx]
-            selected.append((e[0], e[1]))
-
-    for i in range(n_min):
-        _pick(i)
-
-    for i in range(n_max):
-        _pick(n - 1 - i)
-
-    mid = n // 2
-    for i in range(n_median):
-        offset = (i + 1) // 2 * (1 if i % 2 else -1)
-        _pick(mid + offset)
-
+        key = (entries[idx][0], entries[idx][1])
+        if key not in seen:
+            seen.add(key)
+            selected.append(key)
     return selected
 
 
 def save_head_statistics(
     stats: Dict, out_path: Path,
+    metadata: Dict = None,
 ) -> None:
-    """Save head statistics JSON."""
+    """Save head statistics JSON with optional metadata."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    if metadata:
+        data["metadata"] = metadata
+    data.update(stats)
     with open(out_path, "w") as f:
-        json.dump(stats, f, indent=2)
+        json.dump(data, f, indent=2)
 
 
 def load_head_statistics(path: Path) -> Dict:
-    """Load head statistics JSON."""
+    """Load head statistics JSON, stripping metadata."""
     with open(path) as f:
-        return json.load(f)
+        data = json.load(f)
+    data.pop("metadata", None)
+    return data
 
 
 # ── Backend detection ──────────────────────────
@@ -271,65 +269,23 @@ def _head_stats_from_data(layer_data, config):
     return stats
 
 
-def _resolve_heads_for_task(
-    phase_cfg, task, config, stats_dir, gqa,
-):
-    """
-    Resolve which heads to extract for a task.
-
-    Returns (extract_kwargs, label, pairs) or None.
-    pairs: list of (layer, q_head, kv_head) or None.
-    """
-    heads = phase_cfg.get("heads", "all")
-
-    if heads == "all":
-        return {}, "all", None
-
-    if heads == "from_stats":
-        sp = stats_dir / f"{task}.json"
-        if not sp.exists():
-            print("    No stats file — run Phase 1")
-            return None
-        sel_cfg = phase_cfg.get("selection", {})
-        scope = sel_cfg.get("metric", "no_sink_local")
-        if scope == "full":
-            metric = "entropy_full"
-        else:
-            metric = "entropy_no_sink_local"
-        sel = select_heads_for_phase2(
-            load_head_statistics(sp),
-            metric=metric,
-            n_min=sel_cfg.get("n_min_entropy", 1),
-            n_median=sel_cfg.get("n_median_entropy", 1),
-            n_max=sel_cfg.get("n_max_entropy", 1),
+def _tokenize_and_sort(examples, tokenizer, max_len):
+    """Pre-tokenize examples and sort by length."""
+    candidates = []
+    for ex in examples:
+        prompt = format_prompt(ex)
+        tokens = tokenize_and_truncate(
+            tokenizer, prompt, max_len,
         )
-        if not sel:
-            return None
-        pairs = [(l, h, h // gqa) for l, h in sel]
-        tgt_q = list(set(h for _, h, _ in pairs))
-        tgt_kv = list(set(k for _, _, k in pairs))
-        hdesc = ",".join(
-            f"L{l}H{h}" for l, h, _ in pairs
+        candidates.append(
+            (len(tokens), ex, tokens)
         )
-        return {
-            "target_heads": tgt_q,
-            "target_kv_heads": tgt_kv,
-        }, hdesc, pairs
-
-    pairs = [(l, h, h // gqa) for l, h in heads]
-    tgt_q = sorted(set(h for _, h, _ in pairs))
-    tgt_kv = sorted(set(k for _, _, k in pairs))
-    hdesc = ",".join(
-        f"L{l}H{h}" for l, h, _ in pairs
-    )
-    return {
-        "target_heads": tgt_q,
-        "target_kv_heads": tgt_kv,
-    }, hdesc, pairs
+    candidates.sort(key=lambda x: x[0])
+    return candidates
 
 
-def run(phase: str, config: dict, data_root: Path):
-    """Single entry point for both extraction phases."""
+def run(config: dict, data_root: Path):
+    """Unified extraction: scout -> select -> extract."""
     backend = detect_backend()
     res = _load_model(backend, config)
     if backend == "mlx":
@@ -340,13 +296,11 @@ def run(phase: str, config: dict, data_root: Path):
 
     ext = config["extraction"]
     layers = _resolve_layers(config)
-    phase_cfg = config[f"phase{phase}"]
-    n_ex = phase_cfg["examples_per_task"]
+    n_ex = ext.get("examples_per_task", 5)
     tasks = config.get("tasks", list(TASK_CONFIG))
-    gqa = (
-        config["model"]["num_q_heads"]
-        // config["model"]["num_kv_heads"]
-    )
+    mcfg = config["model"]
+    gqa = mcfg["num_q_heads"] // mcfg["num_kv_heads"]
+    sel_cfg = config.get("head_selection", {})
 
     out_cfg = config.get("output", {})
     vdir = data_root / out_cfg.get(
@@ -360,32 +314,28 @@ def run(phase: str, config: dict, data_root: Path):
         "benchmarks_subdir", "benchmarks"
     )
 
-    subdir = (
-        "all_heads" if phase == "1"
-        else "selected_heads"
-    )
+    hs_cfg = config.get("head_statistics", {})
+    hs_params = {
+        "n_queries": hs_cfg.get("n_queries", 10),
+        "n_sink_tokens": hs_cfg.get(
+            "n_sink_tokens", 1,
+        ),
+        "local_window": hs_cfg.get(
+            "local_window", 1024,
+        ),
+        "top_pct_for_mass": hs_cfg.get(
+            "top_pct_for_mass", [1, 5],
+        ),
+    }
 
-    print(f"Phase {phase}: {len(tasks)} tasks, "
+    mode = sel_cfg.get("mode", "auto")
+    print(f"Extraction: {len(tasks)} tasks, "
           f"{len(layers)} layers, {n_ex} ex/task")
-    print(f"Backend: {backend}")
+    print(f"Backend: {backend}, "
+          f"head selection: {mode}")
 
-    all_stats = {}
     for task in tasks:
         print(f"\n  Task: {task}")
-
-        resolved = _resolve_heads_for_task(
-            phase_cfg, task, config, sdir, gqa,
-        )
-        if resolved is None:
-            continue
-        head_kwargs, hdesc, pairs = resolved
-        print(f"    Heads: {hdesc}")
-
-        extract_fn = _make_extract_fn(
-            backend, model, tokenizer,
-            layers, config, mx=mx,
-            **head_kwargs,
-        )
 
         examples = load_task(task)
         if not examples:
@@ -395,46 +345,174 @@ def run(phase: str, config: dict, data_root: Path):
             examples[:n_ex], task, bdir,
         )
 
-        out = vdir / subdir / task
-        lds = extract_and_save_examples(
-            examples, n_ex, task, tokenizer,
-            ext["max_length"], extract_fn, out,
-            heads_label=hdesc,
+        candidates = _tokenize_and_sort(
+            examples, tokenizer,
+            ext["max_length"],
         )
 
-        if phase == "1" and lds:
-            all_stats[task] = (
-                _head_stats_from_data(lds[0], config)
+        # ── Scout pass (auto mode) ──
+        if mode == "auto":
+            print("    Scout pass: all heads")
+            scout_fn = _make_extract_fn(
+                backend, model, tokenizer,
+                layers, config, mx=mx,
             )
+            scout_seq_len, scout_ex, scout_tokens = (
+                candidates[0]
+            )
+            print(f"    Scout: {scout_ex['id']} "
+                  f"({scout_seq_len} tok)")
+
+            import time
+            t0 = time.time()
+            layer_data = scout_fn(scout_tokens)
+            print(f"    Scout extraction: "
+                  f"{time.time() - t0:.0f}s")
+
+            stats = _head_stats_from_data(
+                layer_data, config,
+            )
+
+            del layer_data
+            gc.collect()
+            if backend == "cuda":
+                import torch
+                torch.cuda.empty_cache()
+
+            selected = select_heads_by_percentile(
+                stats,
+                sel_cfg.get(
+                    "metric", "nonlocal_entropy"
+                ),
+                sel_cfg.get(
+                    "percentiles",
+                    [0, 25, 50, 75, 100],
+                ),
+            )
+
+            selected_meta = []
+            for l, h in selected:
+                lk = f"layer_{l}"
+                hk = f"head_{h}"
+                val = 0.0
+                if lk in stats and hk in stats[lk]:
+                    val = stats[lk][hk].get(
+                        sel_cfg.get(
+                            "metric",
+                            "nonlocal_entropy",
+                        ), 0.0,
+                    )
+                selected_meta.append({
+                    "layer": l, "q_head": h,
+                    "kv_head": h // gqa,
+                    "nonlocal_entropy": val,
+                })
+
+            head_stats_meta = {
+                "model": mcfg["hf_name"],
+                "backend": backend,
+                "task": task,
+                "scout_examples": [scout_ex["id"]],
+                "sequence_lengths": [scout_seq_len],
+                "n_layers": mcfg["num_layers"],
+                "n_q_heads": mcfg["num_q_heads"],
+                "n_kv_heads": mcfg["num_kv_heads"],
+                "head_dim": mcfg["head_dim"],
+                "head_statistics_params": hs_params,
+                "selected_heads": selected_meta,
+                "extraction_date": (
+                    datetime.now().isoformat()
+                ),
+            }
+            save_head_statistics(
+                stats, sdir / f"{task}.json",
+                metadata=head_stats_meta,
+            )
+            print(f"    Selected {len(selected)} heads: "
+                  + ", ".join(
+                      f"L{l}H{h}"
+                      for l, h in selected
+                  ))
+        else:
+            explicit = sel_cfg.get("explicit", [])
+            selected = [
+                (l, h) for l, h in explicit
+            ]
+            selected_meta = [
+                {"layer": l, "q_head": h,
+                 "kv_head": h // gqa}
+                for l, h in selected
+            ]
+
+        if not selected:
+            print("    No heads selected, skipping")
+            continue
+
+        # ── Vectors pass: selected heads only ──
+        pairs = [
+            (l, h, h // gqa)
+            for l, h in selected
+        ]
+        tgt_q = sorted(set(
+            h for _, h, _ in pairs
+        ))
+        tgt_kv = sorted(set(
+            k for _, _, k in pairs
+        ))
+        hdesc = ",".join(
+            f"L{l}H{h}" for l, h, _ in pairs
+        )
+        print(f"    Vectors pass: {hdesc}")
+
+        vec_fn = _make_extract_fn(
+            backend, model, tokenizer,
+            layers, config, mx=mx,
+            target_heads=tgt_q,
+            target_kv_heads=tgt_kv,
+        )
+
+        out = vdir / task
+        extracted = extract_and_save_examples(
+            examples, n_ex, task, tokenizer,
+            ext["max_length"], vec_fn, out,
+            heads_label=hdesc,
+            backend=backend,
+            store_raw=ext["store_raw_vectors"],
+            store_rope=ext["store_rope_vectors"],
+        )
 
         save_task_metadata(
             task, TASK_CONFIG[task]["source"],
-            config["model"]["hf_name"], layers,
-            min(n_ex, len(examples)),
+            mcfg["hf_name"], layers,
+            len(extracted),
             out / "metadata.json",
-            **({"selected_heads": [
+            backend=backend,
+            head_statistics_params=hs_params,
+            extraction_config={
+                "max_length": ext["max_length"],
+                "store_raw_vectors": ext[
+                    "store_raw_vectors"
+                ],
+                "store_rope_vectors": ext[
+                    "store_rope_vectors"
+                ],
+            },
+            example_ids=[
+                e["id"] for e in extracted
+            ],
+            selected_heads=[
                 {"layer": l, "q_head": h,
                  "kv_head": k}
                 for l, h, k in pairs
-            ]} if pairs else {}),
+            ],
         )
 
-    if phase == "1":
-        for task, stats in all_stats.items():
-            save_head_statistics(
-                stats, sdir / f"{task}.json",
-            )
-
-    print(f"\nPhase {phase} complete.")
+    print("\nExtraction complete.")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Extract attention vectors.",
-    )
-    parser.add_argument(
-        "--phase", type=str, required=True,
-        choices=["1", "2"],
     )
     parser.add_argument(
         "--config",
@@ -468,7 +546,7 @@ def main():
     print("  Attention Vector Extraction")
     print("=" * 60)
 
-    run(args.phase, config, data_root)
+    run(config, data_root)
 
 
 if __name__ == "__main__":

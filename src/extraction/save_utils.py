@@ -39,6 +39,9 @@ def save_example_json(
     seq_len: int,
     heads_extracted: str,
     path: Path,
+    backend: str = None,
+    store_raw: bool = True,
+    store_rope: bool = True,
 ) -> None:
     """Save per-example metadata sidecar."""
     meta = {
@@ -50,9 +53,11 @@ def save_example_json(
             example.get("context", "")
         ),
         "heads_extracted": heads_extracted,
-        "rope_included": True,
-        "raw_included": True,
+        "rope_included": store_rope,
+        "raw_included": store_raw,
     }
+    if backend:
+        meta["backend"] = backend
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(meta, f, indent=2)
@@ -66,6 +71,10 @@ def save_task_metadata(
     n_examples: int,
     out_path: Path,
     selected_heads: list = None,
+    backend: str = None,
+    head_statistics_params: dict = None,
+    extraction_config: dict = None,
+    example_ids: list = None,
 ) -> None:
     """Save per-task metadata JSON."""
     meta = {
@@ -76,8 +85,18 @@ def save_task_metadata(
         "layers_extracted": layers,
         "n_examples": n_examples,
     }
+    if backend:
+        meta["backend"] = backend
     if selected_heads is not None:
         meta["selected_heads"] = selected_heads
+    if head_statistics_params:
+        meta["head_statistics_params"] = (
+            head_statistics_params
+        )
+    if extraction_config:
+        meta["extraction_config"] = extraction_config
+    if example_ids:
+        meta["example_ids"] = example_ids
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(meta, f, indent=2)
@@ -92,22 +111,25 @@ def extract_and_save_examples(
     extract_fn,
     out_dir: Path,
     heads_label: str = "all",
+    backend: str = None,
+    store_raw: bool = True,
+    store_rope: bool = True,
 ) -> list:
     """
     Shared loop: tokenize, extract, save .pt + JSON.
 
     extract_fn(tokens) -> {layer_idx: {name: tensor}}
-    Returns list of layer_data dicts (for stats).
+    Returns list of {"id", "seq_len"} for extracted
+    examples. Aggressively frees GPU memory between
+    examples to avoid OOM.
     """
     from .load_benchmarks import (
         format_prompt, tokenize_and_truncate,
     )
+    import gc
     import time
     import torch
 
-    # Pre-tokenize all examples and sort by length
-    # (shortest first) so we maximize successful
-    # extractions before hitting memory limits.
     candidates = []
     for ex in examples:
         prompt = format_prompt(ex)
@@ -117,7 +139,7 @@ def extract_and_save_examples(
         candidates.append((len(tokens), ex, tokens))
     candidates.sort(key=lambda x: x[0])
 
-    all_ld = []
+    extracted = []
     ei = 0
     for seq_len, ex, tokens in candidates:
         if ei >= n_examples:
@@ -146,7 +168,18 @@ def extract_and_save_examples(
         save_example_json(
             ex, seq_len, heads_label,
             edir / "example.json",
+            backend=backend,
+            store_raw=store_raw,
+            store_rope=store_rope,
         )
-        all_ld.append(ld)
+
+        del ld
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        extracted.append({
+            "id": ex["id"], "seq_len": seq_len,
+        })
         ei += 1
-    return all_ld
+    return extracted

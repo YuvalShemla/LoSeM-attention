@@ -50,14 +50,14 @@ tasks:
 # head_mode options:
 #
 #   all_heads
-#     Phase 1 data. Runs every Q head (32) for each
-#     layer in `layers`. Total heads per task =
+#     Runs every Q head (32) for each layer in
+#     `layers`. Total heads per task =
 #     len(layers) × 32.
 #     Use for: broad scout, head comparison.
 #
 #   selected_heads
-#     Phase 2 data. Reads which (layer, head) combos
-#     to use from each task's metadata.json.
+#     Reads which (layer, head) combos to use from
+#     each task's metadata.json.
 #     Use for: main experiments after head selection.
 #
 #   custom

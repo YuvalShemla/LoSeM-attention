@@ -98,7 +98,7 @@ def top_pct_mass(
     return float(np.sum(top))
 
 
-def no_sink_local_mask(
+def nonlocal_mask(
     n: int,
     n_sink: int = 1,
     local_window: int = 1024,
@@ -129,36 +129,35 @@ def attention_stats_for_query(
     n = len(keys)
     logits = (query @ keys.T) / np.sqrt(head_dim)
     weights = softmax(logits)
-    mask = no_sink_local_mask(
+    mask = nonlocal_mask(
         n, n_sink, local_window,
     )
 
     stats = {
-        "entropy_full": entropy_nats(weights),
-        "entropy_no_sink_local": 0.0,
+        "full_entropy": entropy_nats(weights),
+        "nonlocal_entropy": 0.0,
     }
 
     w_masked = weights[mask]
     total = np.sum(w_masked)
     if total > 1e-10:
         w_normed = w_masked / total
-        stats["entropy_no_sink_local"] = (
+        stats["nonlocal_entropy"] = (
             entropy_nats(w_normed)
         )
     else:
         w_normed = None
 
     for pct in top_pcts:
-        label = f"top{pct}pct"
-        stats[f"{label}_mass_full"] = (
+        stats[f"full_top{pct}pct_mass"] = (
             top_pct_mass(weights, pct)
         )
         if w_normed is not None:
-            stats[f"{label}_mass_no_sink_local"] = (
+            stats[f"nonlocal_top{pct}pct_mass"] = (
                 top_pct_mass(w_normed, pct)
             )
         else:
-            stats[f"{label}_mass_no_sink_local"] = 1.0
+            stats[f"nonlocal_top{pct}pct_mass"] = 1.0
 
     return stats
 
@@ -174,34 +173,33 @@ def stats_from_weights(
     attention weights (avoids recomputing logits).
     """
     n = len(weights)
-    mask = no_sink_local_mask(n, n_sink, local_window)
+    mask = nonlocal_mask(n, n_sink, local_window)
 
     stats = {
-        "entropy_full": entropy_nats(weights),
-        "entropy_no_sink_local": 0.0,
+        "full_entropy": entropy_nats(weights),
+        "nonlocal_entropy": 0.0,
     }
 
     w_masked = weights[mask]
     total = np.sum(w_masked)
     if total > 1e-10:
         w_normed = w_masked / total
-        stats["entropy_no_sink_local"] = (
+        stats["nonlocal_entropy"] = (
             entropy_nats(w_normed)
         )
     else:
         w_normed = None
 
     for pct in top_pcts:
-        label = f"top{pct}pct"
-        stats[f"{label}_mass_full"] = (
+        stats[f"full_top{pct}pct_mass"] = (
             top_pct_mass(weights, pct)
         )
         if w_normed is not None:
-            stats[f"{label}_mass_no_sink_local"] = (
+            stats[f"nonlocal_top{pct}pct_mass"] = (
                 top_pct_mass(w_normed, pct)
             )
         else:
-            stats[f"{label}_mass_no_sink_local"] = 1.0
+            stats[f"nonlocal_top{pct}pct_mass"] = 1.0
 
     return stats
 
