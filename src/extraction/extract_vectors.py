@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import numpy as np
 from pathlib import Path
@@ -430,7 +431,17 @@ def main():
             Path(__file__).parent.parent / "data"
         ),
     )
+    parser.add_argument(
+        "--hf-token", default=None,
+        help="HuggingFace token for gated models "
+        "(or set HF_TOKEN env var).",
+    )
     args = parser.parse_args()
+
+    token = args.hf_token or os.environ.get("HF_TOKEN")
+    if token:
+        os.environ["HF_TOKEN"] = token
+
     config = _load_config(Path(args.config))
     data_root = Path(args.data_root)
     data_root.mkdir(parents=True, exist_ok=True)
