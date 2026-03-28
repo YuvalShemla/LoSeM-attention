@@ -103,20 +103,39 @@ def extract_and_save_examples(
         format_prompt, tokenize_and_truncate,
     )
     import time
+    import torch
 
-    all_ld = []
-    for ei in range(min(n_examples, len(examples))):
-        ex = examples[ei]
+    # Pre-tokenize all examples and sort by length
+    # (shortest first) so we maximize successful
+    # extractions before hitting memory limits.
+    candidates = []
+    for ex in examples:
         prompt = format_prompt(ex)
         tokens = tokenize_and_truncate(
             tokenizer, prompt, max_len,
         )
-        seq_len = len(tokens)
+        candidates.append((len(tokens), ex, tokens))
+    candidates.sort(key=lambda x: x[0])
+
+    all_ld = []
+    ei = 0
+    for seq_len, ex, tokens in candidates:
+        if ei >= n_examples:
+            break
         print(f"    [{ei}] {ex['id']} "
               f"({seq_len} tok)")
 
         t0 = time.time()
-        ld = extract_fn(tokens)
+        try:
+            ld = extract_fn(tokens)
+        except (torch.cuda.OutOfMemoryError,
+                RuntimeError) as e:
+            if "out of memory" in str(e).lower():
+                torch.cuda.empty_cache()
+                print(f"    OOM at {seq_len} tok, "
+                      f"skipping")
+                continue
+            raise
         print(f"    {time.time() - t0:.0f}s")
 
         edir = out_dir / f"ex_{ei:03d}"
@@ -129,4 +148,5 @@ def extract_and_save_examples(
             edir / "example.json",
         )
         all_ld.append(ld)
+        ei += 1
     return all_ld
