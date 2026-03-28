@@ -269,8 +269,14 @@ def _head_stats_from_data(layer_data, config):
     return stats
 
 
-def _tokenize_and_sort(examples, tokenizer, max_len):
-    """Pre-tokenize examples and sort by length."""
+def _tokenize_and_sample(
+    examples, tokenizer, max_len, n_ex,
+):
+    """Tokenize all examples, randomly sample n_ex.
+
+    Uses a fixed seed (42) for reproducibility.
+    """
+    import random
     candidates = []
     for ex in examples:
         prompt = format_prompt(ex)
@@ -280,12 +286,16 @@ def _tokenize_and_sort(examples, tokenizer, max_len):
         candidates.append(
             (len(tokens), ex, tokens)
         )
-    candidates.sort(key=lambda x: x[0])
+    if len(candidates) > n_ex:
+        rng = random.Random(42)
+        candidates = rng.sample(candidates, n_ex)
     return candidates
 
 
 def run(config: dict, data_root: Path):
     """Unified extraction: scout -> select -> extract."""
+    import time
+
     backend = detect_backend()
     res = _load_model(backend, config)
     if backend == "mlx":
@@ -341,14 +351,17 @@ def run(config: dict, data_root: Path):
         if not examples:
             print("    No examples, skipping")
             continue
-        save_benchmark_examples(
-            examples[:n_ex], task, bdir,
-        )
 
-        candidates = _tokenize_and_sort(
+        # Randomly sample n_ex examples
+        candidates = _tokenize_and_sample(
             examples, tokenizer,
-            ext["max_length"],
+            ext["max_length"], n_ex,
         )
+        save_benchmark_examples(
+            [ex for _, ex, _ in candidates],
+            task, bdir,
+        )
+        print(f"    Sampled {len(candidates)} examples")
 
         # ── Scout pass (auto mode) ──
         if mode == "auto":
@@ -357,13 +370,17 @@ def run(config: dict, data_root: Path):
                 backend, model, tokenizer,
                 layers, config, mx=mx,
             )
+            # Use shortest example for speed
+            scout_idx = min(
+                range(len(candidates)),
+                key=lambda i: candidates[i][0],
+            )
             scout_seq_len, scout_ex, scout_tokens = (
-                candidates[0]
+                candidates[scout_idx]
             )
             print(f"    Scout: {scout_ex['id']} "
                   f"({scout_seq_len} tok)")
 
-            import time
             t0 = time.time()
             layer_data = scout_fn(scout_tokens)
             print(f"    Scout extraction: "
@@ -433,6 +450,57 @@ def run(config: dict, data_root: Path):
                       f"L{l}H{h}"
                       for l, h in selected
                   ))
+
+            # ── Per-example all-heads statistics ──
+            if hs_cfg.get(
+                "compute_all_examples", False,
+            ):
+                pe_dir = sdir / "per_example" / task
+                pe_dir.mkdir(parents=True, exist_ok=True)
+                print(f"    Per-example stats: "
+                      f"{len(candidates)} examples")
+                for ei, (slen, ex, toks) in enumerate(
+                    candidates
+                ):
+                    print(f"      ex_{ei:03d}: "
+                          f"{ex['id']} ({slen} tok)")
+                    t0 = time.time()
+                    ld = scout_fn(toks)
+                    print(f"        extraction: "
+                          f"{time.time() - t0:.0f}s")
+                    ex_stats = _head_stats_from_data(
+                        ld, config,
+                    )
+                    del ld
+                    gc.collect()
+                    if backend == "cuda":
+                        import torch
+                        torch.cuda.empty_cache()
+                    ex_meta = {
+                        "model": mcfg["hf_name"],
+                        "backend": backend,
+                        "task": task,
+                        "example_id": ex["id"],
+                        "example_index": ei,
+                        "sequence_length": slen,
+                        "n_layers": mcfg["num_layers"],
+                        "n_q_heads": mcfg["num_q_heads"],
+                        "n_kv_heads": mcfg["num_kv_heads"],
+                        "head_dim": mcfg["head_dim"],
+                        "head_statistics_params": (
+                            hs_params
+                        ),
+                        "extraction_date": (
+                            datetime.now().isoformat()
+                        ),
+                    }
+                    save_head_statistics(
+                        ex_stats,
+                        pe_dir / f"ex_{ei:03d}.json",
+                        metadata=ex_meta,
+                    )
+                print(f"    Per-example stats saved to "
+                      f"{pe_dir}")
         else:
             explicit = sel_cfg.get("explicit", [])
             selected = [
@@ -449,32 +517,43 @@ def run(config: dict, data_root: Path):
             continue
 
         # ── Vectors pass: selected heads only ──
+        # Build per-layer head mapping so we only
+        # hook the specific layers that have selected
+        # heads, and only extract the right heads at
+        # each layer. This is critical for disk space.
         pairs = [
             (l, h, h // gqa)
             for l, h in selected
         ]
-        tgt_q = sorted(set(
-            h for _, h, _ in pairs
-        ))
-        tgt_kv = sorted(set(
-            k for _, _, k in pairs
-        ))
+        layer_head_map = {}
+        for l, h, k in pairs:
+            lm = layer_head_map.setdefault(
+                l, {"q": set(), "kv": set()}
+            )
+            lm["q"].add(h)
+            lm["kv"].add(k)
+
+        vec_layers = sorted(layer_head_map.keys())
+        per_layer_heads = {
+            l: (sorted(lh["q"]), sorted(lh["kv"]))
+            for l, lh in layer_head_map.items()
+        }
+
         hdesc = ",".join(
             f"L{l}H{h}" for l, h, _ in pairs
         )
-        print(f"    Vectors pass: {hdesc}")
+        print(f"    Vectors pass: {hdesc} "
+              f"({len(vec_layers)} layers)")
 
         vec_fn = _make_extract_fn(
             backend, model, tokenizer,
-            layers, config, mx=mx,
-            target_heads=tgt_q,
-            target_kv_heads=tgt_kv,
+            vec_layers, config, mx=mx,
+            per_layer_heads=per_layer_heads,
         )
 
         out = vdir / task
         extracted = extract_and_save_examples(
-            examples, n_ex, task, tokenizer,
-            ext["max_length"], vec_fn, out,
+            candidates, vec_fn, out,
             heads_label=hdesc,
             backend=backend,
             store_raw=ext["store_raw_vectors"],
@@ -483,7 +562,7 @@ def run(config: dict, data_root: Path):
 
         save_task_metadata(
             task, TASK_CONFIG[task]["source"],
-            mcfg["hf_name"], layers,
+            mcfg["hf_name"], vec_layers,
             len(extracted),
             out / "metadata.json",
             backend=backend,

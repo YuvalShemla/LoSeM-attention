@@ -78,6 +78,7 @@ def extract_layer_qkv_cuda(
     store_rope: bool = True,
     target_heads: Optional[List[int]] = None,
     target_kv_heads: Optional[List[int]] = None,
+    per_layer_heads: Optional[Dict[int, tuple]] = None,
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     """
     Extract Q/K/V from target layers via hooks.
@@ -157,15 +158,18 @@ def extract_layer_qkv_cuda(
         )
 
         # Select which heads to store
-        q_heads = (
-            target_heads if target_heads is not None
-            else list(range(num_q_heads))
-        )
-        kv_heads = (
-            target_kv_heads
-            if target_kv_heads is not None
-            else list(range(num_kv_heads))
-        )
+        if per_layer_heads and li in per_layer_heads:
+            q_heads, kv_heads = per_layer_heads[li]
+        elif target_heads is not None:
+            q_heads = target_heads
+            kv_heads = (
+                target_kv_heads
+                if target_kv_heads is not None
+                else list(range(num_kv_heads))
+            )
+        else:
+            q_heads = list(range(num_q_heads))
+            kv_heads = list(range(num_kv_heads))
 
         layer_tensors = {}
         for hi in q_heads:

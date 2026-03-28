@@ -103,11 +103,7 @@ def save_task_metadata(
 
 
 def extract_and_save_examples(
-    examples: list,
-    n_examples: int,
-    task: str,
-    tokenizer,
-    max_len: int,
+    candidates: list,
     extract_fn,
     out_dir: Path,
     heads_label: str = "all",
@@ -116,34 +112,22 @@ def extract_and_save_examples(
     store_rope: bool = True,
 ) -> list:
     """
-    Shared loop: tokenize, extract, save .pt + JSON.
+    Extract and save vectors for pre-tokenized candidates.
 
+    candidates: list of (seq_len, example_dict, tokens)
     extract_fn(tokens) -> {layer_idx: {name: tensor}}
     Returns list of {"id", "seq_len"} for extracted
     examples. Aggressively frees GPU memory between
     examples to avoid OOM.
     """
-    from .load_benchmarks import (
-        format_prompt, tokenize_and_truncate,
-    )
     import gc
     import time
     import torch
 
-    candidates = []
-    for ex in examples:
-        prompt = format_prompt(ex)
-        tokens = tokenize_and_truncate(
-            tokenizer, prompt, max_len,
-        )
-        candidates.append((len(tokens), ex, tokens))
-    candidates.sort(key=lambda x: x[0])
-
     extracted = []
-    ei = 0
-    for seq_len, ex, tokens in candidates:
-        if ei >= n_examples:
-            break
+    for ei, (seq_len, ex, tokens) in enumerate(
+        candidates
+    ):
         print(f"    [{ei}] {ex['id']} "
               f"({seq_len} tok)")
 
@@ -181,5 +165,4 @@ def extract_and_save_examples(
         extracted.append({
             "id": ex["id"], "seq_len": seq_len,
         })
-        ei += 1
     return extracted

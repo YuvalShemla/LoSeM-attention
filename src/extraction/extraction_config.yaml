@@ -68,7 +68,7 @@ prompt_template: "Context: {context}\n\nQuestion: {question}\n\nAnswer:"
 # ── Extraction ──
 extraction:
   examples_per_task: 5      # examples to extract per task
-  max_length: 131072        # max tokens (128K)
+  max_length: 125000        # max tokens (125K)
   storage_format: "pt_bfloat16"
   store_raw_vectors: true   # pre-RoPE Q and K
   store_rope_vectors: true  # post-RoPE Q and K
@@ -102,6 +102,7 @@ head_statistics:
   n_queries: 10               # last N query positions per head
   n_sink_tokens: 1            # tokens excluded as "sink" (position 0)
   local_window: 1024          # tokens excluded as "local" (last N)
+  compute_all_examples: true  # compute stats for all N examples (adds N forward passes)
 
 # ── Output Paths ──
 # Relative to --data-root (default: ../data/)

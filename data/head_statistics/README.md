@@ -4,20 +4,32 @@ Per-head attention statistics computed during the extraction scout pass. These c
 
 ## What's in here
 
-One JSON file per task, each containing statistics for all 1024 heads (32 layers x 32 Q heads) computed on the shortest example for that task.
+One JSON file per task (scout stats), plus optional per-example stats when `compute_all_examples: true` is set in the config.
 
 ```
 head_statistics/
 └── llama3.1_8b/
-    ├── math_calc.json
+    ├── math_calc.json                   # scout stats (shortest example)
     ├── code_run.json
     ├── longbook_sum_eng.json
     ├── passkey.json
     ├── multi_doc_qa.json
-    └── single_doc_qa.json
+    ├── single_doc_qa.json
+    └── per_example/                     # all-examples stats (optional)
+        ├── math_calc/
+        │   ├── ex_000.json              # all 1024 heads, same format
+        │   ├── ex_001.json
+        │   ├── ex_002.json
+        │   ├── ex_003.json
+        │   └── ex_004.json
+        ├── code_run/
+        │   └── ...
+        └── ...
 ```
 
 ## Format
+
+Each JSON file (both scout and per-example) has the same structure:
 
 ```json
 {
@@ -25,13 +37,13 @@ head_statistics/
     "model": "meta-llama/Meta-Llama-3.1-8B",
     "backend": "cuda",
     "task": "math_calc",
-    "scout_examples": ["math_calc_0"],
-    "sequence_lengths": [45018],
-    "selected_heads": [
-      {"layer": 5, "q_head": 12, "kv_head": 1, "nonlocal_entropy": 1.23},
-      {"layer": 17, "q_head": 3, "kv_head": 0, "nonlocal_entropy": 3.45},
-      ...
-    ],
+    "example_id": "math_calc_0",
+    "example_index": 0,
+    "sequence_length": 45018,
+    "n_layers": 32,
+    "n_q_heads": 32,
+    "n_kv_heads": 8,
+    "head_dim": 128,
     "head_statistics_params": {
       "n_queries": 10, "n_sink_tokens": 1, "local_window": 1024
     }
@@ -50,6 +62,8 @@ head_statistics/
   "layer_1": { ... }
 }
 ```
+
+Scout JSONs additionally include `scout_examples`, `sequence_lengths`, and `selected_heads` in metadata. Per-example JSONs include `example_id`, `example_index`, and `sequence_length`.
 
 ## Metrics
 
@@ -86,7 +100,11 @@ With the default settings, 5 heads are selected:
 | P75 | Above-average diffusion |
 | P100 | Most diffuse attention (highest nonlocal entropy) |
 
-The selected heads and their metric values are recorded in the `metadata.selected_heads` field of each JSON file.
+The selected heads and their metric values are recorded in the `metadata.selected_heads` field of each scout JSON file.
+
+## Per-Example Stats
+
+When `head_statistics.compute_all_examples: true` is set, the pipeline runs an additional forward pass for each of the N examples per task (all heads), saving per-example statistics to `per_example/{task}/ex_{NNN}.json`. This adds ~N forward passes per task but gives ~5120 data points per task (5 examples x 1024 heads) instead of 1024, enabling analysis of how head behavior varies across inputs.
 
 ## Regenerating
 

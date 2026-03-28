@@ -108,6 +108,7 @@ def extract_layer_qkv_mlx(
     store_rope: bool = True,
     target_heads: Optional[List[int]] = None,
     target_kv_heads: Optional[List[int]] = None,
+    per_layer_heads: Optional[Dict[int, tuple]] = None,
     mx=None,
 ) -> Dict[int, Dict[str, np.ndarray]]:
     """
@@ -160,16 +161,6 @@ def extract_layer_qkv_mlx(
     mx.eval(cos_cache)
     mx.eval(sin_cache)
 
-    q_heads_list = (
-        target_heads if target_heads is not None
-        else list(range(num_q_heads))
-    )
-    kv_heads_list = (
-        target_kv_heads
-        if target_kv_heads is not None
-        else list(range(num_kv_heads))
-    )
-
     results = {}
     for li in layers:
         if li not in snapshots:
@@ -207,6 +198,22 @@ def extract_layer_qkv_mlx(
         )
         mx.eval(q_rope)
         mx.eval(k_rope)
+
+        # Select which heads to store
+        if per_layer_heads and li in per_layer_heads:
+            q_heads_list, kv_heads_list = (
+                per_layer_heads[li]
+            )
+        elif target_heads is not None:
+            q_heads_list = target_heads
+            kv_heads_list = (
+                target_kv_heads
+                if target_kv_heads is not None
+                else list(range(num_kv_heads))
+            )
+        else:
+            q_heads_list = list(range(num_q_heads))
+            kv_heads_list = list(range(num_kv_heads))
 
         layer_tensors = {}
         for hi in q_heads_list:
