@@ -150,11 +150,13 @@ def extract_layer_qkv_cuda(
         k_raw = k_raw.transpose(1, 2)
         v_all = v_all.transpose(1, 2)
 
-        # Apply RoPE using model's rotary embedding
-        # (renamed rotary_emb → rotary_fn in newer
-        # transformers versions)
+        # Get rotary embedding module.
+        # Older transformers: attn.rotary_emb
+        # Newer transformers: moved to model.model.rotary_emb
+        # (attn.rotary_fn is the apply function, not the
+        # embedding module)
         rotary = getattr(attn, "rotary_emb", None) \
-            or getattr(attn, "rotary_fn", None)
+            or getattr(model.model, "rotary_emb", None)
         cos, sin = _get_rope_embeddings(
             rotary, seq_len, device,
         )
