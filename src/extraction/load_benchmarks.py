@@ -59,14 +59,16 @@ PROMPT_TEMPLATE = (
 def _load_infinitebench(task_value: str) -> List[Dict]:
     """Load one InfiniteBench task from HuggingFace."""
     from datasets import load_dataset
+    # Load only the specific task's JSONL file to avoid
+    # schema conflicts between splits (code_debug has
+    # mismatched column types that break the full load).
     ds = load_dataset(
         "xinrongzhang2022/InfiniteBench",
+        data_files=f"{task_value}.jsonl",
         split="train",
     )
     examples = []
     for row in ds:
-        if row.get("task") != task_value:
-            continue
         examples.append({
             "id": f"{task_value}_{len(examples)}",
             "task": task_value,
