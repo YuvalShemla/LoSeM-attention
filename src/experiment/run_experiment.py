@@ -132,7 +132,15 @@ class Experiment:
         self.head_mode = exp.get(
             "head_mode", "selected_heads"
         )
-        self.layers = exp.get("layers", [17])
+        raw_layers = exp.get("layers", [17])
+        if raw_layers == "all":
+            self.layers = list(range(
+                self.config["model"].get(
+                    "num_layers", 32
+                )
+            ))
+        else:
+            self.layers = list(raw_layers)
         self.custom_heads = exp.get("custom_heads", [])
 
         mcfg = self.config["model"]

@@ -107,6 +107,14 @@ def _make_extract_fn(
     return fn
 
 
+def _resolve_layers(config):
+    """Resolve layers config: list of ints or 'all'."""
+    raw = config["extraction"]["layers"]
+    if raw == "all":
+        return list(range(config["model"]["num_layers"]))
+    return list(raw)
+
+
 def _head_stats_from_data(layer_data, config):
     """Compute per-head stats from extracted data."""
     n_q = config["model"]["num_q_heads"]
@@ -157,7 +165,7 @@ def run_phase1(config: dict, data_root: Path):
         mx = None
 
     ext = config["extraction"]
-    layers = ext["layers"]
+    layers = _resolve_layers(config)
     n_ex = config["phase1"]["examples_per_task"]
     tasks = config.get("tasks", list(TASK_CONFIG))
 
@@ -226,7 +234,7 @@ def run_phase2(config: dict, data_root: Path):
         mx = None
 
     ext = config["extraction"]
-    layers = ext["layers"]
+    layers = _resolve_layers(config)
     n_ex = config["phase2"]["examples_per_task"]
     tasks = config.get("tasks", list(TASK_CONFIG))
     gqa = (

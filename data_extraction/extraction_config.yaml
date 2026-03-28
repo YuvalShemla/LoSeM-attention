@@ -71,7 +71,7 @@ extraction:
   storage_format: "pt_bfloat16"
   store_raw_vectors: true     # pre-RoPE Q and K
   store_rope_vectors: true    # post-RoPE Q and K
-  layers: [0, 17, 19, 31]    # which layers to extract
+  layers: "all"              # all 32 layers (or e.g. [0, 17, 19, 31] for specific ones)
 
 # ── Phase 1: All-Heads Scout ──
 phase1:

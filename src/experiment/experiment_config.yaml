@@ -81,7 +81,7 @@ experiment:
   head_mode: "selected_heads"
 
   # Used only when head_mode is "all_heads".
-  layers: [17]
+  layers: [17]                # or "all" for every layer
 
   # Used only when head_mode is "custom".
   custom_heads:
