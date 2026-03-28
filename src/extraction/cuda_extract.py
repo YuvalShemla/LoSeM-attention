@@ -95,9 +95,7 @@ def extract_layer_qkv_cuda(
 
     def make_hook(layer_idx):
         def hook_fn(module, args, output):
-            # args[0] is hidden_states [batch, seq, dim]
-            h = args[0].detach()
-            captured[layer_idx] = h
+            captured[layer_idx] = args[0].detach().cpu()
         return hook_fn
 
     # Register pre-forward hooks on target layers
@@ -121,12 +119,11 @@ def extract_layer_qkv_cuda(
     for li in layers:
         if li not in captured:
             continue
-        h = captured[li]
+        h = captured.pop(li).to(device)
         layer = decoder_layers[li]
         attn = layer.self_attn
         ln = layer.input_layernorm
 
-        # Apply layer norm (input to attention)
         h_normed = ln(h)
 
         # Raw projections (before RoPE)
@@ -210,6 +207,5 @@ def extract_layer_qkv_cuda(
         del q_rope, k_rope
         torch.cuda.empty_cache()
 
-    del captured
     torch.cuda.empty_cache()
     return results
