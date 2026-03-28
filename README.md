@@ -1,6 +1,6 @@
 # Approximate Attention Experiments
 
-Modular framework for evaluating sparse attention
+Modular framework for evaluating attention
 approximation methods on long-context LLMs.
 
 ## Quick Start
