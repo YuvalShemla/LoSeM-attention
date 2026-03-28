@@ -242,8 +242,8 @@ def _head_stats_from_data(layer_data, config):
                 Qf = Q.astype(np.float32)
                 Kf = K.astype(np.float32)
             else:
-                Qf = Q.float().numpy()
-                Kf = K.float().numpy()
+                Qf = Q.detach().float().numpy()
+                Kf = K.detach().float().numpy()
             ls[f"head_{hi}"] = (
                 compute_head_statistics(
                     Qf, Kf, hdim,

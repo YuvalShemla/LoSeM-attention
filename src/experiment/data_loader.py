@@ -50,18 +50,18 @@ def load_pt_example(
         q_key = f"Q_rope_head{head}"
         if q_key in tensors:
             data["Q"] = (
-                tensors[q_key].float().numpy()
+                tensors[q_key].detach().float().numpy()
             )
     if kv_head is not None:
         k_key = f"K_rope_kvhead{kv_head}"
         v_key = f"V_kvhead{kv_head}"
         if k_key in tensors:
             data["K"] = (
-                tensors[k_key].float().numpy()
+                tensors[k_key].detach().float().numpy()
             )
         if v_key in tensors:
             data["V"] = (
-                tensors[v_key].float().numpy()
+                tensors[v_key].detach().float().numpy()
             )
 
     meta_path = example_dir / "example.json"
