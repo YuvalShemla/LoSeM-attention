@@ -24,9 +24,6 @@ tasks:
   - math_calc            # 19K tok, arithmetic sums
   - code_run             # 75K tok, predict code output
   - longbook_sum_eng     # 120K tok, book summarization
-  - passkey              # 127K tok, needle-in-haystack
-  - multi_doc_qa         # 61K tok, cross-document QA
-  - single_doc_qa        # 85K tok, single-document QA
 
 # ── Task Source Definitions ──
 # Maps task name -> HuggingFace dataset + filter.
