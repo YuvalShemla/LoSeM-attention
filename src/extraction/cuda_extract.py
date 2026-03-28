@@ -23,7 +23,7 @@ def load_cuda_model(
     )
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="sdpa",
     )
@@ -151,8 +151,12 @@ def extract_layer_qkv_cuda(
         v_all = v_all.transpose(1, 2)
 
         # Apply RoPE using model's rotary embedding
+        # (renamed rotary_emb → rotary_fn in newer
+        # transformers versions)
+        rotary = getattr(attn, "rotary_emb", None) \
+            or getattr(attn, "rotary_fn", None)
         cos, sin = _get_rope_embeddings(
-            attn.rotary_emb, seq_len, device,
+            rotary, seq_len, device,
         )
         q_rope, k_rope = _apply_rotary_pos_emb(
             q_raw, k_raw, cos, sin,
