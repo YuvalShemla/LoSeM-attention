@@ -93,24 +93,16 @@ phase1:
 phase2:
   examples_per_task: 10       # 10 examples per task
   heads: "from_stats"
-  n_heads_to_select: 3        # only used with "from_stats"
-  selection_criteria:
-    - max_entropy              # most diffuse
-    - min_entropy              # most concentrated
-    - median_entropy           # typical
+  selection:
+    metric: "no_sink_local"   # "no_sink_local" or "full"
+    n_min_entropy: 1          # most concentrated heads
+    n_median_entropy: 1       # typical heads
+    n_max_entropy: 1          # most diffuse heads
 
 # ── Head Statistics ──
 # Computed during Phase 1 to profile every head.
 # Stats are averaged over the last n_queries positions.
-#
-# Available metrics for selection_metric:
-#   entropy_full                — Shannon entropy over all positions
-#   entropy_no_sink_local       — entropy excluding sink + local window
-#   top{P}pct_mass_full         — mass in the top P% (e.g. top1pct_mass_full)
-#   top{P}pct_mass_no_sink_local
-#
 head_statistics:
-  selection_metric: "entropy_no_sink_local"
   top_pct_for_mass: [1, 5]    # compute mass in top 1% and top 5%
   n_queries: 10               # last N query positions per head
   n_sink_tokens: 1            # tokens excluded as "sink" (position 0)

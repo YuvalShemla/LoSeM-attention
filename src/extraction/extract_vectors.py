@@ -81,9 +81,12 @@ def compute_head_statistics(
 def select_heads_for_phase2(
     stats: Dict,
     metric: str = "entropy_no_sink_local",
+    n_min: int = 1,
+    n_median: int = 1,
+    n_max: int = 1,
 ) -> List[Tuple[int, int]]:
     """
-    Select 3 heads: max, min, median entropy.
+    Select heads by entropy ranking.
 
     stats: {layer_N: {head_M: {metric: value}}}
     Returns list of (layer, head) tuples.
@@ -100,17 +103,28 @@ def select_heads_for_phase2(
         return []
 
     entries.sort(key=lambda x: x[2])
+    n = len(entries)
+    used = set()
     selected = []
-    selected.append(
-        (entries[0][0], entries[0][1])
-    )
-    mid = len(entries) // 2
-    selected.append(
-        (entries[mid][0], entries[mid][1])
-    )
-    selected.append(
-        (entries[-1][0], entries[-1][1])
-    )
+
+    def _pick(idx):
+        idx = max(0, min(idx, n - 1))
+        if idx not in used:
+            used.add(idx)
+            e = entries[idx]
+            selected.append((e[0], e[1]))
+
+    for i in range(n_min):
+        _pick(i)
+
+    for i in range(n_max):
+        _pick(n - 1 - i)
+
+    mid = n // 2
+    for i in range(n_median):
+        offset = (i + 1) // 2 * (1 if i % 2 else -1)
+        _pick(mid + offset)
+
     return selected
 
 
@@ -276,14 +290,18 @@ def _resolve_heads_for_task(
         if not sp.exists():
             print("    No stats file — run Phase 1")
             return None
-        hs_cfg = config.get("head_statistics", {})
-        metric = hs_cfg.get(
-            "selection_metric",
-            "entropy_no_sink_local",
-        )
+        sel_cfg = phase_cfg.get("selection", {})
+        scope = sel_cfg.get("metric", "no_sink_local")
+        if scope == "full":
+            metric = "entropy_full"
+        else:
+            metric = "entropy_no_sink_local"
         sel = select_heads_for_phase2(
             load_head_statistics(sp),
             metric=metric,
+            n_min=sel_cfg.get("n_min_entropy", 1),
+            n_median=sel_cfg.get("n_median_entropy", 1),
+            n_max=sel_cfg.get("n_max_entropy", 1),
         )
         if not sel:
             return None
