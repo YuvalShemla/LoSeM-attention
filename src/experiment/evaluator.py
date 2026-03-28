@@ -8,7 +8,7 @@ import numpy as np
 from typing import Dict, List
 
 from ..algorithms.base import AttentionInput
-from ..math_utils import (
+from ..core import (
     full_attention, compute_special_indices,
     relative_l2_error, stats_from_weights,
 )

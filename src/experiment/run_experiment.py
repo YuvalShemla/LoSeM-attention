@@ -442,7 +442,7 @@ class Experiment:
             log.info(
                 "  Attention stats: "
                 "entropy=%.2f±%.2f, "
-                "top100_mass=%.3f±%.3f",
+                "top1pct_mass=%.3f±%.3f",
                 qstats.get(
                     "entropy_no_sink_local_mean", 0
                 ),
@@ -450,11 +450,11 @@ class Experiment:
                     "entropy_no_sink_local_std", 0
                 ),
                 qstats.get(
-                    "top100_mass_no_sink_local_mean",
+                    "top1pct_mass_no_sink_local_mean",
                     0,
                 ),
                 qstats.get(
-                    "top100_mass_no_sink_local_std",
+                    "top1pct_mass_no_sink_local_std",
                     0,
                 ),
             )

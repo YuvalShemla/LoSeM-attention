@@ -197,7 +197,7 @@ def test_smoke_run():
 
 def test_math_utils_consistency():
     """softmax and ground truth are numerically stable."""
-    from src.math_utils import (
+    from src.core import (
         softmax, full_attention,
         relative_l2_error,
     )
@@ -228,7 +228,7 @@ def test_math_utils_consistency():
 
 def test_statistics_module():
     """Statistics functions produce valid results."""
-    from src.math_utils import (
+    from src.core import (
         entropy_nats, top_k_mass, softmax,
         concentration_curve, norm_statistics,
         kv_norm_correlation,

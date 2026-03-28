@@ -12,7 +12,7 @@ from typing import List, Dict, Tuple
 from .base import (
     AttentionAlgorithm, AttentionInput, AttentionOutput,
 )
-from ..math_utils import (
+from ..core import (
     softmax, hybrid_attention, flat_kmeans,
 )
 

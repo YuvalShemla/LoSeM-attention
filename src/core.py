@@ -1,6 +1,4 @@
 """
-Shared math utilities for the entire codebase.
-
 Core attention primitives (softmax, full/subset attention),
 error metrics, grouping helpers, KMeans, and attention
 statistics (entropy, concentration, norms).
@@ -89,6 +87,17 @@ def top_k_mass(
     return float(np.sum(top))
 
 
+def top_pct_mass(
+    weights: np.ndarray, pct: float,
+) -> float:
+    """Fraction of attention in the top pct% positions."""
+    k = max(1, int(len(weights) * pct / 100))
+    if len(weights) <= k:
+        return 1.0
+    top = np.partition(weights, -k)[-k:]
+    return float(np.sum(top))
+
+
 def no_sink_local_mask(
     n: int,
     n_sink: int = 1,
@@ -108,12 +117,14 @@ def attention_stats_for_query(
     head_dim: int,
     n_sink: int = 1,
     local_window: int = 1024,
+    top_pcts: tuple = (1, 5),
 ) -> Dict[str, float]:
     """
     Full attention statistics for one query.
 
-    Returns entropy, top-100 mass, and their
-    no-sink-local variants.
+    Returns entropy and top-% mass, both full
+    and excluding sink + local window.
+    top_pcts: integer percentages (e.g. (1, 5)).
     """
     n = len(keys)
     logits = (query @ keys.T) / np.sqrt(head_dim)
@@ -122,58 +133,77 @@ def attention_stats_for_query(
         n, n_sink, local_window,
     )
 
-    e_full = entropy_nats(weights)
-    t100_full = top_k_mass(weights)
+    stats = {
+        "entropy_full": entropy_nats(weights),
+        "entropy_no_sink_local": 0.0,
+    }
 
     w_masked = weights[mask]
     total = np.sum(w_masked)
     if total > 1e-10:
         w_normed = w_masked / total
-        e_no_sl = entropy_nats(w_normed)
-        t100_no_sl = top_k_mass(w_normed)
+        stats["entropy_no_sink_local"] = (
+            entropy_nats(w_normed)
+        )
     else:
-        e_no_sl = 0.0
-        t100_no_sl = 1.0
+        w_normed = None
 
-    return {
-        "entropy_full": e_full,
-        "entropy_no_sink_local": e_no_sl,
-        "top100_mass_full": t100_full,
-        "top100_mass_no_sink_local": t100_no_sl,
-    }
+    for pct in top_pcts:
+        label = f"top{pct}pct"
+        stats[f"{label}_mass_full"] = (
+            top_pct_mass(weights, pct)
+        )
+        if w_normed is not None:
+            stats[f"{label}_mass_no_sink_local"] = (
+                top_pct_mass(w_normed, pct)
+            )
+        else:
+            stats[f"{label}_mass_no_sink_local"] = 1.0
+
+    return stats
 
 
 def stats_from_weights(
     weights: np.ndarray,
     n_sink: int = 1,
     local_window: int = 1024,
+    top_pcts: tuple = (1, 5),
 ) -> Dict[str, float]:
     """
-    Compute entropy and top-100 mass from pre-computed
+    Compute entropy and top-% mass from pre-computed
     attention weights (avoids recomputing logits).
     """
     n = len(weights)
     mask = no_sink_local_mask(n, n_sink, local_window)
 
-    e_full = entropy_nats(weights)
-    t100_full = top_k_mass(weights)
+    stats = {
+        "entropy_full": entropy_nats(weights),
+        "entropy_no_sink_local": 0.0,
+    }
 
     w_masked = weights[mask]
     total = np.sum(w_masked)
     if total > 1e-10:
         w_normed = w_masked / total
-        e_no_sl = entropy_nats(w_normed)
-        t100_no_sl = top_k_mass(w_normed)
+        stats["entropy_no_sink_local"] = (
+            entropy_nats(w_normed)
+        )
     else:
-        e_no_sl = 0.0
-        t100_no_sl = 1.0
+        w_normed = None
 
-    return {
-        "entropy_full": e_full,
-        "entropy_no_sink_local": e_no_sl,
-        "top100_mass_full": t100_full,
-        "top100_mass_no_sink_local": t100_no_sl,
-    }
+    for pct in top_pcts:
+        label = f"top{pct}pct"
+        stats[f"{label}_mass_full"] = (
+            top_pct_mass(weights, pct)
+        )
+        if w_normed is not None:
+            stats[f"{label}_mass_no_sink_local"] = (
+                top_pct_mass(w_normed, pct)
+            )
+        else:
+            stats[f"{label}_mass_no_sink_local"] = 1.0
+
+    return stats
 
 
 def concentration_curve(

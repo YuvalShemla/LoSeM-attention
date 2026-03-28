@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, List
 
-from ..math_utils import (
+from ..core import (
     softmax, norm_statistics, kv_norm_correlation,
 )
 from ..experiment.plotting import (

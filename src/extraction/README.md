@@ -30,7 +30,7 @@ statistics (entropy, top-100 mass) to identify which
 heads have the most/least concentrated attention.
 
 ```bash
-python -m data_extraction.extract_vectors --phase 1
+python -m src.extraction.extract_vectors --phase 1
 ```
 
 **Output:**
@@ -59,7 +59,7 @@ Uses Phase 1 statistics to pick 3 heads:
 Extracts only those heads, for 10 examples per task.
 
 ```bash
-python -m data_extraction.extract_vectors --phase 2
+python -m src.extraction.extract_vectors --phase 2
 ```
 
 **Output:**
@@ -86,7 +86,7 @@ Each `layer_XX.pt` contains a dict of bfloat16 tensors:
 
 ## Configuration
 
-All parameters in `data_extraction/extraction_config.yaml`:
+All parameters in `src/extraction/extraction_config.yaml`:
 - `extraction.layers`: which layers to extract
 - `extraction.max_length`: context window (131072)
 - `extraction.phase1.examples_per_task`: default 1
@@ -118,8 +118,7 @@ All parameters in `data_extraction/extraction_config.yaml`:
 
 | File | Purpose |
 |------|---------|
-| `extract_vectors.py` | CLI + Phase 1/Phase 2 orchestration |
+| `extract_vectors.py` | CLI + Phase 1/Phase 2 orchestration + head stats |
 | `load_benchmarks.py` | HuggingFace dataset loaders |
-| `head_statistics.py` | Entropy/mass computation, head selection |
 | `cuda_extract.py` | CUDA backend (HF hooks) |
 | `mlx_extract.py` | MLX backend (layer-by-layer) |

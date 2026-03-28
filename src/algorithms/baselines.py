@@ -12,7 +12,7 @@ import numpy as np
 from .base import (
     AttentionAlgorithm, AttentionInput, AttentionOutput,
 )
-from ..math_utils import (
+from ..core import (
     softmax, subset_attention,
     make_doubling_boundaries,
 )

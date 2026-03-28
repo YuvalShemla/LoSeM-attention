@@ -12,7 +12,7 @@ from typing import List
 from .base import (
     AttentionAlgorithm, AttentionInput, AttentionOutput,
 )
-from ..math_utils import (
+from ..core import (
     make_equal_groups, hybrid_attention,
 )
 

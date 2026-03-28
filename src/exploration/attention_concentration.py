@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, List
 
-from ..math_utils import (
+from ..core import (
     softmax, top_k_mass, no_sink_local_mask,
     concentration_curve,
 )

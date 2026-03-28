@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, List
 
-from ..math_utils import softmax
+from ..core import softmax
 from ..experiment.plotting import (
     setup_style, save_figure,
 )

@@ -20,7 +20,7 @@ from src.algorithms import METHOD_REGISTRY
 from src.algorithms.base import (
     AttentionInput, AttentionOutput, AttentionAlgorithm,
 )
-from src.math_utils import (
+from src.core import (
     softmax, compute_special_indices,
 )
 

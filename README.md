@@ -10,8 +10,8 @@ approximation methods on long-context LLMs.
 pip install -r requirements.txt
 
 # Extract attention vectors (GPU required)
-python -m data_extraction.extract_vectors --phase 1
-python -m data_extraction.extract_vectors --phase 2
+python -m src.extraction.extract_vectors --phase 1
+python -m src.extraction.extract_vectors --phase 2
 
 # Run an experiment
 python -m src.experiment.run_experiment \
@@ -28,7 +28,7 @@ python -m src.exploration.run_exploration --all
 ```
 reorgV1/
 ├── src/
-│   ├── math_utils.py       # Shared math: softmax, attention, entropy, kmeans
+│   ├── core.py             # Shared math: softmax, attention, entropy, kmeans
 │   ├── algorithms/         # Algorithm implementations
 │   │   ├── base.py         # ABC + dataclasses
 │   │   ├── baselines.py    # OracleTopK, OracleSampling, OracleGrouping
@@ -49,13 +49,12 @@ reorgV1/
 │       ├── entropy_distribution.py
 │       ├── kv_norm_correlation.py
 │       └── topk_vs_sampling_bias.py
-├── data_extraction/        # CUDA/MLX extraction pipeline
-│   ├── extract_vectors.py  # Phase 1 + Phase 2
-│   ├── load_benchmarks.py  # HF dataset loaders
-│   ├── head_statistics.py  # Per-head entropy stats
-│   ├── cuda_extract.py     # CUDA backend
-│   ├── mlx_extract.py      # MLX backend
-│   └── save_utils.py       # .pt bfloat16 saving
+│   ├── extraction/         # CUDA/MLX extraction pipeline
+│   │   ├── extract_vectors.py  # Phase 1 + Phase 2 + head stats
+│   │   ├── load_benchmarks.py  # HF dataset loaders
+│   │   ├── cuda_extract.py     # CUDA backend
+│   │   ├── mlx_extract.py      # MLX backend
+│   │   └── save_utils.py       # .pt bfloat16 saving
 ├── data/                   # Extracted vectors (not in git)
 │   ├── benchmarks/         # Raw benchmark examples
 │   ├── head_statistics/    # Phase 1 head profiles
@@ -101,7 +100,7 @@ Always auto-included in every experiment:
 ## Configuration
 
 Each module has its own config file:
-- `data_extraction/extraction_config.yaml` — model, tasks, extraction phases
+- `src/extraction/extraction_config.yaml` — model, tasks, extraction phases
 - `src/experiment/experiment_config.yaml` — experiment scope, budgets, algorithms, plotting
 - `src/exploration/exploration_config.yaml` — exploration plots, per-plot settings
 
