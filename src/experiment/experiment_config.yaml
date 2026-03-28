@@ -1,0 +1,173 @@
+# ══════════════════════════════════════════════════════
+# Experiment Configuration
+# ══════════════════════════════════════════════════════
+#
+# Controls what the experiment runner evaluates and how.
+# See src/experiment/README.md for full documentation.
+
+# ── Model ──
+model:
+  hf_name: "meta-llama/Meta-Llama-3.1-8B"
+  mlx_name: "mlx-community/Meta-Llama-3.1-8B-bf16"
+  num_layers: 32
+  num_q_heads: 32
+  num_kv_heads: 8
+  head_dim: 128
+  context_window: 131072
+  rope:
+    theta: 500000.0
+    method: "standard"
+    scaling: null
+    source: "model.rotary_emb"
+
+# ── Data Paths ──
+# Relative to working directory, or absolute.
+data:
+  vectors_dir: "data/vectors/llama3.1_8b"
+  results_dir: "results"
+
+# ── Tasks ──
+# Which tasks to evaluate. Must match directories
+# inside vectors_dir/{phase}/.
+tasks:
+  - math_calc
+  - code_run
+  - longbook_sum_eng
+  - passkey
+  - multi_doc_qa
+  - single_doc_qa
+
+# ══════════════════════════════════════════════════════
+# Experiment Scope
+# ══════════════════════════════════════════════════════
+#
+# Three knobs control what gets evaluated:
+#
+#   head_mode    — which heads to run on
+#   n_examples   — how many examples per task (strict)
+#   n_queries    — how many query positions per example
+#
+# head_mode options:
+#
+#   all_heads
+#     Phase 1 data. Runs every Q head (32) for each
+#     layer in `layers`. Total heads per task =
+#     len(layers) × 32.
+#     Use for: broad scout, head comparison.
+#
+#   selected_heads
+#     Phase 2 data. Reads which (layer, head) combos
+#     to use from each task's metadata.json.
+#     Use for: main experiments after head selection.
+#
+#   custom
+#     Explicit (layer, q_head, kv_head) list.
+#     Use for: debug runs, single-head analysis.
+#
+# n_examples is strict: if a task has fewer examples
+# on disk than requested, the run fails immediately.
+
+experiment:
+  seed: 42
+  n_queries: 100        # query positions per example (last N tokens)
+  n_examples: 10        # examples per task (strict)
+
+  # Compute per-query attention statistics (entropy,
+  # top-100 mass) alongside error metrics. Nearly free
+  # since we already compute full attention weights.
+  # Saved in per_task/*/data_statistics.json.
+  compute_statistics: true
+
+  head_mode: "selected_heads"
+
+  # Used only when head_mode is "all_heads".
+  layers: [17]
+
+  # Used only when head_mode is "custom".
+  custom_heads:
+    - {layer: 17, q_head: 0, kv_head: 0}
+
+  attention_sink:
+    n_sink_tokens: 1
+  local_window:
+    size: 1024
+
+  budget_sweep:
+    absolute:
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+      - 2048
+      - 3000
+
+# ── Algorithm Parameter Sweeps ──
+# Each key matches a METHOD_REGISTRY name.
+# expand_from_config() generates all combos.
+algorithm_configs:
+  meanq:
+    n_groups: 32
+    modes: ["topk", "hybrid"]
+    top_k_sweep: [0, 1, 2, 3, 5, 7, 10]
+  multiq:
+    n_query_clusters: [32, 64, 128, 256]
+    n_groups: 32
+    modes: ["topk", "hybrid"]
+    top_k_sweep: [0, 1, 2, 3, 5, 7, 10]
+  kmeans:
+    n_clusters: 256
+    modes: ["topk", "hybrid"]
+    top_k_sweep: [0, 1, 2, 3, 5, 7, 10]
+
+# ── Plot Settings ──
+plotting:
+  figsize: [16, 10]
+  dpi: 200
+  log_scale: true
+  linear_scale: true
+  baseline_linestyle: "--"
+  algorithm_linestyle: "-"
+  error_bands: true
+
+  baseline_colors:
+    OracleTopK: "#d62728"                    # red
+    OracleSampling: "#2ca02c"                # green
+    "Oracle Grouping": "#1f77b4"             # blue
+    "Oracle Grouping (no last)": "#1f77b4"   # blue
+
+  algorithm_color_families:
+    - {family: "blue",   topk: "#7fbfff", hybrid: "#1f77b4"}   # light blue / blue
+    - {family: "orange", topk: "#ffb380", hybrid: "#ff7f0e"}   # light orange / orange
+    - {family: "pink",   topk: "#ffb3c6", hybrid: "#e377c2"}   # light pink / pink
+    - {family: "gold",   topk: "#ffe08a", hybrid: "#d4a017"}   # light gold / gold
+
+
+# ══════════════════════════════════════════════════════
+# Example Configs for Common Scenarios
+# ══════════════════════════════════════════════════════
+#
+# --- Scout: 1 example, all heads, all 4 layers ---
+# experiment:
+#   n_examples: 1
+#   n_queries: 50
+#   head_mode: "all_heads"
+#   layers: [0, 17, 19, 31]
+#
+# --- Full experiment: 10 examples, selected heads ---
+# experiment:
+#   n_examples: 10
+#   n_queries: 100
+#   head_mode: "selected_heads"
+#
+# --- Debug: 1 example, one head, tiny sweep ---
+# experiment:
+#   n_examples: 1
+#   n_queries: 10
+#   head_mode: "custom"
+#   custom_heads:
+#     - {layer: 17, q_head: 0, kv_head: 0}
+#   budget_sweep:
+#     absolute: [32, 256]

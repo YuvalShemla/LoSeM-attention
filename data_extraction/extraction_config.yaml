@@ -1,0 +1,189 @@
+# ── Data Extraction Configuration ──
+#
+# Everything configurable for the extraction pipeline.
+# Change parameters here, not in the Python files.
+
+# ── Model ──
+model:
+  hf_name: "meta-llama/Meta-Llama-3.1-8B"
+  mlx_name: "mlx-community/Meta-Llama-3.1-8B-bf16"
+  num_layers: 32
+  num_q_heads: 32
+  num_kv_heads: 8
+  head_dim: 128
+  context_window: 131072
+  rope:
+    theta: 500000.0
+    method: "standard"
+    source: "model.rotary_emb"
+
+# ── Tasks to Extract ──
+# Only listed tasks are extracted. To add more, see
+# "Other Available Tasks" at the bottom of this file.
+tasks:
+  - math_calc            # 19K tok, arithmetic sums
+  - code_run             # 75K tok, predict code output
+  - longbook_sum_eng     # 120K tok, book summarization
+  - passkey              # 127K tok, needle-in-haystack
+  - multi_doc_qa         # 61K tok, cross-document QA
+  - single_doc_qa        # 85K tok, single-document QA
+
+# ── Task Source Definitions ──
+# Maps task name -> HuggingFace dataset + filter.
+task_sources:
+  math_calc:
+    benchmark: "infinitebench"
+    hf_name: "xinrongzhang2022/InfiniteBench"
+    filter_field: "task"
+    filter_value: "math_calc"
+  code_run:
+    benchmark: "infinitebench"
+    hf_name: "xinrongzhang2022/InfiniteBench"
+    filter_field: "task"
+    filter_value: "code_run"
+  longbook_sum_eng:
+    benchmark: "infinitebench"
+    hf_name: "xinrongzhang2022/InfiniteBench"
+    filter_field: "task"
+    filter_value: "longbook_sum_eng"
+  passkey:
+    benchmark: "infinitebench"
+    hf_name: "xinrongzhang2022/InfiniteBench"
+    filter_field: "task"
+    filter_value: "passkey"
+  multi_doc_qa:
+    benchmark: "longbench_v2"
+    hf_name: "THUDM/LongBench-v2"
+    filter_field: "domain"
+    filter_value: "Multi-Document QA"
+  single_doc_qa:
+    benchmark: "longbench_v2"
+    hf_name: "THUDM/LongBench-v2"
+    filter_field: "domain"
+    filter_value: "Single-Document QA"
+
+# ── Prompt ──
+prompt_template: "Context: {context}\n\nQuestion: {question}\n\nAnswer:"
+
+# ── Extraction ──
+extraction:
+  max_length: 131072          # max tokens (128K)
+  storage_format: "pt_bfloat16"
+  store_raw_vectors: true     # pre-RoPE Q and K
+  store_rope_vectors: true    # post-RoPE Q and K
+  layers: [0, 17, 19, 31]    # which layers to extract
+
+# ── Phase 1: All-Heads Scout ──
+phase1:
+  examples_per_task: 1        # 1 example per task
+  heads: "all"                # extract all 32+8 heads
+
+# ── Phase 2: Selected Heads ──
+phase2:
+  examples_per_task: 10       # 10 examples per task
+  n_heads_to_select: 3        # pick 3 heads
+  selection_criteria:
+    - max_entropy              # most diffuse
+    - min_entropy              # most concentrated
+    - median_entropy           # typical
+
+# ── Head Statistics ──
+# Computed during Phase 1 to drive head selection.
+# Stats are averaged over the last n_queries positions
+# (deterministic, consistent with experiment evaluation).
+head_statistics:
+  n_queries: 10               # last N query positions per head
+  n_sink_tokens: 1            # attention sink positions
+  local_window: 1024          # local window size
+  selection_metric: "entropy_no_sink_local"
+  top_k_for_mass: 100         # K in "top-K mass" statistic
+
+# ── Output Paths ──
+# Relative to --data-root (default: ../data/)
+output:
+  vectors_subdir: "vectors/llama3.1_8b"
+  head_stats_subdir: "head_statistics/llama3.1_8b"
+  benchmarks_subdir: "benchmarks"
+
+
+# ═══════════════════════════════════════════════════
+# Other Available Tasks
+# ═══════════════════════════════════════════════════
+#
+# To use any of these: add the task name to `tasks`
+# above, and uncomment its `task_sources` entry here.
+#
+# ── InfiniteBench (7 more tasks) ──
+#
+# longbook_qa_eng      — free-form QA on a synthetic book (~100K tok)
+# longbook_choice_eng  — multiple-choice QA on a synthetic book (~100K tok)
+# longdialogue_qa_eng  — identify speakers in anonymized scripts (~100K tok)
+# code_debug           — find the buggy function in a code repo (~100K tok)
+# math_find            — locate a special integer in a long list (~100K tok)
+# number_string        — find repeated numbers in noisy context (~100K tok)
+# kv_retrieval         — key-value dictionary lookup (~100K tok)
+#
+# ── LongBench v2 (4 more domains) ──
+#
+# long_in_context_learning  — few-shot learning with long context
+# long_dialogue_history     — comprehension of extended conversations
+# code_repo_understanding   — reasoning about code repositories
+# long_structured_data      — tables and structured data
+#
+# ── Source entries (uncomment to enable) ──
+#
+# longbook_qa_eng:
+#   benchmark: "infinitebench"
+#   hf_name: "xinrongzhang2022/InfiniteBench"
+#   filter_field: "task"
+#   filter_value: "longbook_qa_eng"
+# longbook_choice_eng:
+#   benchmark: "infinitebench"
+#   hf_name: "xinrongzhang2022/InfiniteBench"
+#   filter_field: "task"
+#   filter_value: "longbook_choice_eng"
+# longdialogue_qa_eng:
+#   benchmark: "infinitebench"
+#   hf_name: "xinrongzhang2022/InfiniteBench"
+#   filter_field: "task"
+#   filter_value: "longdialogue_qa_eng"
+# code_debug:
+#   benchmark: "infinitebench"
+#   hf_name: "xinrongzhang2022/InfiniteBench"
+#   filter_field: "task"
+#   filter_value: "code_debug"
+# math_find:
+#   benchmark: "infinitebench"
+#   hf_name: "xinrongzhang2022/InfiniteBench"
+#   filter_field: "task"
+#   filter_value: "math_find"
+# number_string:
+#   benchmark: "infinitebench"
+#   hf_name: "xinrongzhang2022/InfiniteBench"
+#   filter_field: "task"
+#   filter_value: "number_string"
+# kv_retrieval:
+#   benchmark: "infinitebench"
+#   hf_name: "xinrongzhang2022/InfiniteBench"
+#   filter_field: "task"
+#   filter_value: "kv_retrieval"
+# long_in_context_learning:
+#   benchmark: "longbench_v2"
+#   hf_name: "THUDM/LongBench-v2"
+#   filter_field: "domain"
+#   filter_value: "Long In-context Learning"
+# long_dialogue_history:
+#   benchmark: "longbench_v2"
+#   hf_name: "THUDM/LongBench-v2"
+#   filter_field: "domain"
+#   filter_value: "Long-dialogue History Understanding"
+# code_repo_understanding:
+#   benchmark: "longbench_v2"
+#   hf_name: "THUDM/LongBench-v2"
+#   filter_field: "domain"
+#   filter_value: "Code Repository Understanding"
+# long_structured_data:
+#   benchmark: "longbench_v2"
+#   hf_name: "THUDM/LongBench-v2"
+#   filter_field: "domain"
+#   filter_value: "Long Structured Data Understanding"
