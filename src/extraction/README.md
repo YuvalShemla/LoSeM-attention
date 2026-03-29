@@ -114,7 +114,7 @@ These control how the per-head statistics are computed during the scout pass. Th
 
 ```yaml
 output:
-  vectors_subdir: "vectors/llama3.1_8b"
+  vectors_subdir: "vectors"
   head_stats_subdir: "head_statistics/llama3.1_8b"
   benchmarks_subdir: "benchmarks"
 ```
@@ -134,12 +134,12 @@ python -m src.extraction.extract_vectors \
 
 ```
 data/
-├── vectors/llama3.1_8b/
+├── vectors/
 │   ├── math_calc/
 │   │   ├── ex_000/
-│   │   │   ├── layer_00.pt      # selected heads only, bfloat16
-│   │   │   ├── layer_01.pt
-│   │   │   ├── ...
+│   │   │   ├── layer_01.pt      # selected heads only, bfloat16
+│   │   │   ├── layer_06.pt
+│   │   │   ├── layer_26.pt
 │   │   │   └── example.json     # example metadata (id, seq_len, heads)
 │   │   ├── ex_001/ ...
 │   │   └── metadata.json        # task metadata + selected_heads list
@@ -147,7 +147,7 @@ data/
 │   └── ...
 ├── head_statistics/llama3.1_8b/
 │   ├── math_calc.json           # per-head stats + selection info
-│   └── ...
+│   └── per_example/             # optional per-example stats
 └── benchmarks/
     ├── math_calc.json           # raw benchmark examples
     └── ...

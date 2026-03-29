@@ -107,7 +107,7 @@ head_statistics:
 # ── Output Paths ──
 # Relative to --data-root (default: ../data/)
 output:
-  vectors_subdir: "vectors/llama3.1_8b"
+  vectors_subdir: "vectors"
   head_stats_subdir: "head_statistics/llama3.1_8b"
   benchmarks_subdir: "benchmarks"
 

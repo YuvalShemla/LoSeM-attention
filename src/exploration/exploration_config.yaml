@@ -3,9 +3,9 @@
 # ══════════════════════════════════════════════════════
 #
 # Controls the data analysis / exploration pipeline.
-# Exploration runs on a single head per task, computing
-# attention statistics and diagnostic plots to understand
-# the attention landscape before running experiments.
+# Exploration computes attention statistics and
+# diagnostic plots to understand the attention
+# landscape before running experiments.
 
 # ── Model ──
 model:
@@ -39,11 +39,22 @@ exploration:
   n_examples: 1
 
   # How many query positions to sample per example.
-  # Sampled uniformly from valid range (excluding
-  # sink tokens and local window).
+  # Sampled from the last N token positions.
   n_queries: 200
 
-  # Which head to analyze.
+  # Which heads to analyze.
+  #
+  # head_mode options:
+  #   "selected_heads" — reads selected heads from
+  #     metadata.json per task, iterates all of them.
+  #     Generates per-head plots + side-by-side summaries.
+  #
+  #   "custom" — uses the single head specified below.
+  #     Useful for debugging or quick single-head runs.
+  #
+  head_mode: "selected_heads"
+
+  # Used only when head_mode is "custom".
   layer: 17
   q_head: 0
   kv_head: 0

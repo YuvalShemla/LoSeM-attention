@@ -11,6 +11,7 @@ patterns before running approximation experiments.
 | `entropy_distribution.py` | Entropy vs position, entropy histograms |
 | `kv_norm_correlation.py` | Key-value norm relationship, top-keys correlation |
 | `topk_vs_sampling_bias.py` | TopK vs Uniform vs Oracle at various budgets |
+| `visualize_head_statistics.py` | Cross-task and per-example head statistics |
 | `run_exploration.py` | CLI entry point for all analyses |
 
 ## Usage
@@ -29,16 +30,37 @@ python -m src.exploration.run_exploration \
 python -m src.exploration.run_exploration --all
 ```
 
+## Head Modes
+
+The exploration config supports two head modes:
+
+**`selected_heads`** (default) — reads selected heads
+from each task's `metadata.json` and generates plots
+for all 5 selected heads. Each head gets its own
+subdirectory.
+
+**`custom`** — single head specified in the config.
+Useful for debugging or quick runs.
+
 ## Output
 
 Results saved to `results/exploration_{date}/`:
 ```
-results/exploration_2026-03-18_14-30/
+results/exploration_2026-03-28_14-30/
 ├── math_calc/
-│   ├── attention_concentration.png
-│   ├── entropy_distribution.png
-│   ├── kv_norm_correlation.png
-│   └── topk_vs_sampling_bias.png
+│   ├── L26H12/
+│   │   ├── attention_concentration.png
+│   │   ├── entropy_distribution.png
+│   │   ├── kv_norm_correlation.png
+│   │   └── topk_vs_sampling_bias.png
+│   ├── L31H24/
+│   │   └── ...
+│   ├── L6H4/
+│   │   └── ...
+│   ├── L12H14/
+│   │   └── ...
+│   └── L1H2/
+│       └── ...
 ├── code_run/
 │   └── ...
 └── ...
@@ -53,6 +75,8 @@ exploration:
   seed: 42
   n_examples: 1
   n_queries: 200
+  head_mode: "selected_heads"   # or "custom"
+  # Used only for head_mode: "custom"
   layer: 17
   q_head: 0
   kv_head: 0

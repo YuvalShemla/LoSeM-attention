@@ -108,7 +108,7 @@ class Experiment:
             self.tasks = []
 
         vdir = vectors_dir or data_cfg.get(
-            "vectors_dir", "data/vectors/llama3.1_8b"
+            "vectors_dir", "data/vectors"
         )
         self.vectors_dir = Path(vdir)
         results_dir = Path(

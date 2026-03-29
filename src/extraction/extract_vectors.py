@@ -314,7 +314,7 @@ def run(config: dict, data_root: Path):
 
     out_cfg = config.get("output", {})
     vdir = data_root / out_cfg.get(
-        "vectors_subdir", "vectors/llama3.1_8b"
+        "vectors_subdir", "vectors"
     )
     sdir = data_root / out_cfg.get(
         "head_stats_subdir",

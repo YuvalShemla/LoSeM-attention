@@ -4,7 +4,7 @@
 
 ```
 src/
-├── math_utils.py       # Shared math: softmax, attention, entropy, norms, kmeans
+├── core.py             # Shared math: softmax, attention, entropy, norms, kmeans
 ├── algorithms/         # Attention approximation methods
 │   ├── base.py         # ABC + dataclasses
 │   ├── baselines.py    # OracleTopK, OracleSampling, OracleGrouping
@@ -17,19 +17,27 @@ src/
 │   ├── data_loader.py  # .pt file loading
 │   ├── evaluator.py    # Per-query evaluation
 │   └── plotting.py     # Publication-quality plots
-└── exploration/        # Data analysis dashboards
-    ├── exploration_config.yaml  # Exploration settings
-    ├── run_exploration.py
-    ├── attention_concentration.py
-    ├── entropy_distribution.py
-    ├── kv_norm_correlation.py
-    └── topk_vs_sampling_bias.py
+├── exploration/        # Data analysis dashboards
+│   ├── exploration_config.yaml  # Exploration settings
+│   ├── run_exploration.py
+│   ├── visualize_head_statistics.py
+│   ├── attention_concentration.py
+│   ├── entropy_distribution.py
+│   ├── kv_norm_correlation.py
+│   └── topk_vs_sampling_bias.py
+└── extraction/         # CUDA/MLX extraction pipeline
+    ├── extract_vectors.py
+    ├── extraction_config.yaml
+    ├── load_benchmarks.py
+    ├── cuda_extract.py
+    ├── mlx_extract.py
+    └── save_utils.py
 ```
 
 ## Dependency Graph
 
 ```
-math_utils.py  ←── shared by everything below
+core.py  ←── shared by everything below
 
 python -m src.experiment.run_experiment
   └── experiment/run_experiment.py

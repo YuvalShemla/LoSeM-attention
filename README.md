@@ -1,4 +1,4 @@
-# Approximate Attention Experiments
+# Local Attention
 
 Modular framework for evaluating attention
 approximation methods on long-context LLMs.
@@ -10,8 +10,7 @@ approximation methods on long-context LLMs.
 pip install -r requirements.txt
 
 # Extract attention vectors (GPU required)
-python -m src.extraction.extract_vectors --phase 1
-python -m src.extraction.extract_vectors --phase 2
+python -m src.extraction.extract_vectors
 
 # Run an experiment
 python -m src.experiment.run_experiment \
@@ -26,7 +25,7 @@ python -m src.exploration.run_exploration --all
 ## Structure
 
 ```
-reorgV1/
+local-attention/
 ├── src/
 │   ├── core.py             # Shared math: softmax, attention, entropy, kmeans
 │   ├── algorithms/         # Algorithm implementations
@@ -36,29 +35,30 @@ reorgV1/
 │   │   ├── multiq_grouping.py
 │   │   └── kmeans_clustering.py
 │   ├── experiment/         # Runner, plotting, data loading
-│   │   ├── experiment_config.yaml  # Experiment hyperparameters
-│   │   ├── run_experiment.py  # Multi-task experiment class + CLI
-│   │   ├── plotting.py     # Publication-quality plots
-│   │   ├── data_loader.py  # .pt file loading
-│   │   ├── evaluator.py    # Per-query evaluation
-│   │   └── statistics.py   # Shared analysis utilities
-│   └── exploration/        # Data analysis dashboards
-│       ├── exploration_config.yaml  # Exploration settings
-│       ├── run_exploration.py
-│       ├── attention_concentration.py
-│       ├── entropy_distribution.py
-│       ├── kv_norm_correlation.py
-│       └── topk_vs_sampling_bias.py
-│   ├── extraction/         # CUDA/MLX extraction pipeline
-│   │   ├── extract_vectors.py  # Phase 1 + Phase 2 + head stats
-│   │   ├── load_benchmarks.py  # HF dataset loaders
-│   │   ├── cuda_extract.py     # CUDA backend
-│   │   ├── mlx_extract.py      # MLX backend
-│   │   └── save_utils.py       # .pt bfloat16 saving
+│   │   ├── experiment_config.yaml
+│   │   ├── run_experiment.py
+│   │   ├── plotting.py
+│   │   ├── data_loader.py
+│   │   └── evaluator.py
+│   ├── exploration/        # Data analysis dashboards
+│   │   ├── exploration_config.yaml
+│   │   ├── run_exploration.py
+│   │   ├── visualize_head_statistics.py
+│   │   ├── attention_concentration.py
+│   │   ├── entropy_distribution.py
+│   │   ├── kv_norm_correlation.py
+│   │   └── topk_vs_sampling_bias.py
+│   └── extraction/         # CUDA/MLX extraction pipeline
+│       ├── extract_vectors.py
+│       ├── extraction_config.yaml
+│       ├── load_benchmarks.py
+│       ├── cuda_extract.py
+│       ├── mlx_extract.py
+│       └── save_utils.py
 ├── data/                   # Extracted vectors (not in git)
 │   ├── benchmarks/         # Raw benchmark examples
-│   ├── head_statistics/    # Phase 1 head profiles
-│   └── vectors/            # .pt attention vectors
+│   ├── head_statistics/    # Per-head attention profiles
+│   └── vectors/            # .pt attention vectors (flat: vectors/{task}/)
 ├── tests/                  # Minimal test suite
 ├── docs/methods.md         # Algorithms in math notation
 └── results/                # Experiment outputs
@@ -77,16 +77,16 @@ reorgV1/
 
 ## Data Format
 
-Per-layer bfloat16 `.pt` files with JSON metadata:
+Per-layer bfloat16 `.pt` files with JSON metadata (flat layout):
 ```
-data/vectors/llama3.1_8b/all_heads/math_calc/
+data/vectors/math_calc/
   ex_000/
-    layer_17.pt    # {Q_rope_head0: [seq,128], ...}
+    layer_26.pt    # {Q_rope_head12: [seq,128], ...}
     example.json   # Per-example metadata
-  metadata.json    # Task-level provenance
+  metadata.json    # Task-level provenance + selected_heads
 ```
 
-See `data/vectors/README.md` for the full schema.
+Only layers containing selected heads are saved. See `data/vectors/README.md` for the full schema.
 
 ## Baselines
 

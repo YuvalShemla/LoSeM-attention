@@ -21,7 +21,7 @@ class AttentionAlgorithm(ABC):
 | File | Contents |
 |------|----------|
 | `base.py` | ABC, AttentionInput/Output dataclasses |
-| `math_utils.py` | softmax, rel_l2, hybrid_attention, doubling/equal groups |
+| `../core.py` | softmax, rel_l2, hybrid_attention, doubling/equal groups |
 | `baselines.py` | OracleTopK, OracleSampling, OracleGrouping |
 | `meanq_grouping.py` | MeanQ: sort by mean-query projection |
 | `multiq_grouping.py` | MultiQ: KMeans on queries, per-centroid ordering |
