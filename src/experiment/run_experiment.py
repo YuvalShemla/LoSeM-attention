@@ -7,7 +7,7 @@ per_task/ subfolders and overview/ summaries.
 
 Usage:
   python -m src.experiment.run_experiment \\
-    --algorithms meanq kmeans \\
+    --algorithms multiq kmeans \\
     --tasks math_calc code_run \\
     --name grouping_comparison_v1
 """
@@ -32,6 +32,7 @@ from .data_loader import (
 from .evaluator import (
     evaluate_query, aggregate_results,
     aggregate_query_stats,
+    weighted_aggregate_heads,
 )
 from .plotting import (
     plot_experiment, plot_overview,
@@ -423,18 +424,10 @@ class Experiment:
                 del Q, K, V
                 gc.collect()
 
-        agg = aggregate_results(all_results)
         n_total = len(all_results)
         task_elapsed = time.time() - task_t0
 
         families = self._build_families(algorithms)
-        plot_experiment(
-            agg, task_dir,
-            self.config.get("plotting", {}),
-            self.budgets, families,
-            title=f"{task} ({phase or 'flat'})",
-            n_queries=n_total,
-        )
 
         # Per-head aggregation and plots
         per_head_dir = task_dir / "per_head"
@@ -477,6 +470,22 @@ class Experiment:
                 self.budgets, families,
                 task_name=task,
             )
+
+        # Weighted aggregate across heads
+        if per_head_aggs and head_meta:
+            agg = weighted_aggregate_heads(
+                per_head_aggs, head_meta,
+            )
+        else:
+            agg = aggregate_results(all_results)
+
+        plot_experiment(
+            agg, task_dir,
+            self.config.get("plotting", {}),
+            self.budgets, families,
+            title=f"{task} ({phase or 'flat'})",
+            n_queries=n_total,
+        )
 
         self._save_json(
             f"per_task/{task}/aggregated_stats.json",
@@ -670,10 +679,9 @@ class Experiment:
     def _build_families(self, algorithms):
         """Build plot family specs from algorithms."""
         import re
-        colors = self.config.get("plotting", {}).get(
-            "algorithm_color_families", []
+        color_map = self.config.get("plotting", {}).get(
+            "algorithm_colors", {}
         )
-        markers = ["D", "X", "s", "v", "P", "^"]
         seen = {}
         families = []
         for m in algorithms:
@@ -682,20 +690,13 @@ class Experiment:
                 if isinstance(m, spec.cls):
                     algo_name = aname
                     break
-            # Derive prefix from instance name by
-            # stripping the trailing -mode-kN suffix
             pfx = re.sub(
                 r"-(topk|hybrid)-k\d+$", "", m.name,
             )
             if pfx in seen:
                 continue
-            ci = len(seen) % max(len(colors), 1)
-            mi = len(seen) % len(markers)
-            c = (
-                colors[ci] if ci < len(colors)
-                else {"topk": "#888", "hybrid": "#444"}
-            )
             seen[pfx] = True
+            c = color_map.get(algo_name, {})
             tk_sweep = self.config.get(
                 "algorithm_configs", {}
             ).get(algo_name, {}).get(
@@ -708,7 +709,7 @@ class Experiment:
                 "color_hybrid": c.get(
                     "hybrid", "#444"
                 ),
-                "marker": markers[mi],
+                "marker": c.get("marker", "o"),
                 "top_k_sweep": tk_sweep,
             })
         return families

@@ -116,8 +116,8 @@ def _write_test_config(tmpdir, vdir):
             },
         },
         "algorithm_configs": {
-            "meanq": {
-                "n_groups": 8,
+            "kmeans": {
+                "n_clusters": 8,
                 "modes": ["hybrid"],
                 "top_k_sweep": [0, 3],
             },
@@ -149,7 +149,7 @@ def test_smoke_run():
             config_path=cfg_path,
             name="test",
         )
-        exp.run(algo_names=["meanq"])
+        exp.run(algo_names=["kmeans"])
 
         out = exp.out_dir
         assert (out / "spec.json").exists()

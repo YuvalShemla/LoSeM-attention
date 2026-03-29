@@ -108,10 +108,6 @@ experiment:
 # Each key matches a METHOD_REGISTRY name.
 # expand_from_config() generates all combos.
 algorithm_configs:
-  meanq:
-    n_groups: 256
-    modes: ["topk", "hybrid"]
-    top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
   multiq:
     n_query_clusters: [256]
     n_groups: 256
@@ -138,11 +134,15 @@ plotting:
     "Oracle Grouping": "#1f77b4"             # blue
     "Oracle Grouping (no last)": "#1f77b4"   # blue
 
-  algorithm_color_families:
-    - {family: "blue",   topk: "#7fbfff", hybrid: "#1f77b4"}   # light blue / blue
-    - {family: "orange", topk: "#ffb380", hybrid: "#ff7f0e"}   # light orange / orange
-    - {family: "pink",   topk: "#ffb3c6", hybrid: "#e377c2"}   # light pink / pink
-    - {family: "gold",   topk: "#ffe08a", hybrid: "#d4a017"}   # light gold / gold
+  algorithm_colors:
+    kmeans:
+      topk: "#ffb380"
+      hybrid: "#ff7f0e"
+      marker: "D"
+    multiq:
+      topk: "#7fbfff"
+      hybrid: "#1f77b4"
+      marker: "X"
 
 
 # ══════════════════════════════════════════════════════

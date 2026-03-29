@@ -13,7 +13,6 @@ from .baselines import (
     OracleSampling,
     OracleGrouping,
 )
-from .meanq_grouping import MeanQGrouping
 from .multiq_grouping import MultiQGrouping
 from .kmeans_clustering import KMeansClustering
 
@@ -34,7 +33,6 @@ METHOD_REGISTRY = {
     "oracle_grouping": MethodSpec(
         OracleGrouping, "baseline",
     ),
-    "meanq": MethodSpec(MeanQGrouping, "algorithm"),
     "multiq": MethodSpec(
         MultiQGrouping, "algorithm",
     ),

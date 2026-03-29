@@ -102,6 +102,70 @@ def aggregate_results(all_results: List[Dict]) -> Dict:
     return agg
 
 
+PERCENTILE_WEIGHTS = {0: 1, 25: 2, 50: 3, 75: 2, 100: 1}
+
+
+def weighted_aggregate_heads(
+    per_head_aggs: Dict[int, Dict],
+    head_meta: list,
+) -> Dict:
+    """
+    Weighted aggregate across heads by percentile.
+
+    Triangular weighting: p50 gets 3x the weight of
+    p0/p100. Falls back to equal weights if percentile
+    metadata is missing.
+    """
+    weights = []
+    aggs = []
+    for idx, info in per_head_aggs.items():
+        meta = head_meta[idx] if head_meta else {}
+        pct = meta.get("percentile")
+        w = PERCENTILE_WEIGHTS.get(pct, 1)
+        weights.append(w)
+        aggs.append(info["agg"])
+
+    all_keys = set()
+    for a in aggs:
+        all_keys.update(a.keys())
+
+    total_w = sum(weights)
+    result = {}
+    for key in sorted(all_keys):
+        present = [
+            (a[key], w)
+            for a, w in zip(aggs, weights)
+            if key in a
+        ]
+        if not present:
+            continue
+        w_sum = sum(w for _, w in present)
+        err_mean = sum(
+            e["error_mean"] * w for e, w in present
+        ) / w_sum
+        bud_mean = sum(
+            e["budget_mean"] * w for e, w in present
+        ) / w_sum
+        err_std = sum(
+            e["error_std"] * w for e, w in present
+        ) / w_sum
+        bud_std = sum(
+            e["budget_std"] * w for e, w in present
+        ) / w_sum
+        n_total = sum(
+            e["n_queries"] for e, _ in present
+        )
+        result[key] = {
+            "error_mean": float(err_mean),
+            "error_std": float(err_std),
+            "budget_mean": float(bud_mean),
+            "budget_std": float(bud_std),
+            "n_queries": n_total,
+            "weighting": "percentile_triangular",
+        }
+    return result
+
+
 def aggregate_query_stats(
     all_results: List[Dict],
 ) -> Dict[str, float]:
