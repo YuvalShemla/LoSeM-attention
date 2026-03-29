@@ -6,6 +6,12 @@ to capture hidden states at target layers, then computes
 Q/K/V projections with and without RoPE.
 """
 
+import os
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "expandable_segments:True",
+)
+
 import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple
@@ -107,9 +113,13 @@ def extract_layer_qkv_cuda(
         )
         hooks.append(hook)
 
-    # Forward pass (no gradient)
+    # Forward pass through backbone only (no gradient).
+    # Use model.model (LlamaModel) instead of model
+    # (LlamaForCausalLM) to skip lm_head, which would
+    # allocate [batch, seq, vocab_size] (~17 GB at 70K).
+    # Disable KV cache to save ~8 GB across 32 layers.
     with torch.no_grad():
-        model(input_ids)
+        model.model(input_ids, use_cache=False)
 
     # Remove hooks
     for h in hooks:
@@ -208,7 +218,7 @@ def extract_layer_qkv_cuda(
 
         # Free GPU memory
         del h, h_normed, q_raw, k_raw, v_all
-        del q_rope, k_rope
+        del q_rope, k_rope, cos, sin
         torch.cuda.empty_cache()
 
     import gc

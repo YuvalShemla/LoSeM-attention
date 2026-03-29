@@ -147,30 +147,37 @@ def extract_layer_qkv_mlx(
     ).astype(h.dtype)
     mx.eval(mask)
 
-    # Layer-by-layer forward
-    for li, layer in enumerate(decoder_layers):
-        h = layer(h, mask=mask)
-        mx.eval(h)
-        if li in layer_set:
-            snapshots[li] = h
-
-    # Precompute RoPE cache
+    # Precompute RoPE cache before layer loop
     cos_cache, sin_cache = _compute_rope_cache(
         seq_len, head_dim, rope_theta, mx,
     )
     mx.eval(cos_cache)
     mx.eval(sin_cache)
 
+    # Layer-by-layer forward.
+    # Capture INPUT to target layers (before the layer
+    # call) so that input_layernorm sees the correct
+    # hidden state.
+    for li, layer in enumerate(decoder_layers):
+        if li in layer_set:
+            snapshots[li] = h
+        h = layer(h, mask=mask)
+        mx.eval(h)
+
+    # Free the final hidden state (not needed)
+    del h
+
     results = {}
     for li in layers:
         if li not in snapshots:
             continue
-        h_snap = snapshots[li]
+        h_snap = snapshots.pop(li)
         layer = decoder_layers[li]
         attn = layer.self_attn
 
-        # Apply input layernorm
+        # Apply input layernorm to the INPUT
         h_normed = layer.input_layernorm(h_snap)
+        del h_snap
 
         # Raw projections
         q_all = attn.q_proj(h_normed)

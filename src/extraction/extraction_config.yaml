@@ -21,12 +21,12 @@ model:
 # Only listed tasks are extracted. To add more, see
 # "Other Available Tasks" at the bottom of this file.
 tasks:
-  - math_calc            # 19K tok, arithmetic sums
-  - code_run             # 75K tok, predict code output
-  - longbook_sum_eng     # 120K tok, book summarization
-  - kv_retrieval         # ~100K tok, key-value dictionary lookup
-  - multi_doc_qa         # 61K tok, multi-document QA
-  - single_doc_qa        # 85K tok, single-document QA
+  - math_calc            # ~19K tok, arithmetic sums
+  - code_run             # ~75K tok, predict code output
+  - longbook_sum_eng     # ~66K tok (truncated from 120K), book summarization
+  - kv_retrieval         # ~80K tok (truncated from 100K+), key-value dictionary lookup
+  - multi_doc_qa         # ~61K tok, multi-document QA
+  - single_doc_qa        # ~80K tok (truncated from 85K), single-document QA
 
 # ── Task Source Definitions ──
 # Maps task name -> HuggingFace dataset + filter.
@@ -68,7 +68,7 @@ prompt_template: "Context: {context}\n\nQuestion: {question}\n\nAnswer:"
 # ── Extraction ──
 extraction:
   examples_per_task: 1      # examples to extract per task
-  max_length: 125000        # max tokens (125K)
+  max_length: 80000         # max tokens (80K, safe for A100-40GB)
   storage_format: "pt_bfloat16"
   store_raw_vectors: true   # pre-RoPE Q and K
   store_rope_vectors: true  # post-RoPE Q and K
