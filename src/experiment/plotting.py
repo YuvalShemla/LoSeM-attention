@@ -46,8 +46,13 @@ def save_figure(fig, path, dpi=200):
     plt.close(fig)
 
 
-def _format_log_axes(ax):
+def _format_log_axes(ax, budgets=None):
     """Format log-scale axes with readable labels."""
+    if budgets:
+        from matplotlib.ticker import FixedLocator
+        ax.xaxis.set_major_locator(
+            FixedLocator(budgets)
+        )
     ax.xaxis.set_major_formatter(FuncFormatter(
         lambda x, _: (
             f"{int(x)}" if x >= 1 else f"{x:.1f}"
@@ -289,7 +294,7 @@ def plot_experiment(
         if log_scale:
             ax.set_xscale("log")
             ax.set_yscale("log")
-            _format_log_axes(ax)
+            _format_log_axes(ax, budgets)
 
         subtitle = (
             f"{n_queries} queries" if n_queries
@@ -377,7 +382,7 @@ def plot_overview(
             if log_scale:
                 ax.set_xscale("log")
                 ax.set_yscale("log")
-                _format_log_axes(ax)
+                _format_log_axes(ax, budgets)
             ax.grid(True, alpha=0.3, ls="--",
                     which="both")
             if i == 0:
@@ -545,7 +550,7 @@ def plot_per_head_comparison(
             if log_scale:
                 ax.set_xscale("log")
                 ax.set_yscale("log")
-                _format_log_axes(ax)
+                _format_log_axes(ax, budgets)
             ax.grid(
                 True, alpha=0.3, ls="--",
                 which="both",
