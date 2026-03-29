@@ -16,27 +16,42 @@
     {
       "layer": 26,
       "q_head": 12,
-      "kv_head": 3
+      "kv_head": 3,
+      "nonlocal_entropy": 2.078761268346597,
+      "percentile": 0,
+      "selection_label": "p0_lowest"
     },
     {
       "layer": 31,
       "q_head": 24,
-      "kv_head": 6
+      "kv_head": 6,
+      "nonlocal_entropy": 7.7404806612448525,
+      "percentile": 25,
+      "selection_label": "p25"
     },
     {
       "layer": 6,
       "q_head": 4,
-      "kv_head": 1
+      "kv_head": 1,
+      "nonlocal_entropy": 8.387393690016555,
+      "percentile": 50,
+      "selection_label": "p50_median"
     },
     {
       "layer": 12,
       "q_head": 14,
-      "kv_head": 3
+      "kv_head": 3,
+      "nonlocal_entropy": 8.943048107581326,
+      "percentile": 75,
+      "selection_label": "p75"
     },
     {
       "layer": 1,
       "q_head": 2,
-      "kv_head": 0
+      "kv_head": 0,
+      "nonlocal_entropy": 10.387183356331217,
+      "percentile": 100,
+      "selection_label": "p100_highest"
     }
   ],
   "head_statistics_params": {

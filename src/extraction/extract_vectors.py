@@ -80,17 +80,26 @@ def compute_head_statistics(
     }
 
 
+PERCENTILE_LABELS = {
+    0: "p0_lowest",
+    25: "p25",
+    50: "p50_median",
+    75: "p75",
+    100: "p100_highest",
+}
+
+
 def select_heads_by_percentile(
     stats: Dict,
     metric: str = "nonlocal_entropy",
     percentiles: List[int] = (0, 25, 50, 75, 100),
-) -> List[Tuple[int, int]]:
+) -> List[Tuple[int, int, int, str]]:
     """
     Select heads at entropy percentile positions.
 
     Ranks all (layer, head) pairs by metric value
-    ascending. Returns deduplicated (layer, q_head)
-    tuples.
+    ascending. Returns deduplicated
+    (layer, q_head, percentile, label) tuples.
     """
     entries = []
     for layer_key, heads in stats.items():
@@ -115,7 +124,12 @@ def select_heads_by_percentile(
         key = (entries[idx][0], entries[idx][1])
         if key not in seen:
             seen.add(key)
-            selected.append(key)
+            label = PERCENTILE_LABELS.get(
+                pct, f"p{pct}"
+            )
+            selected.append(
+                (key[0], key[1], pct, label)
+            )
     return selected
 
 
@@ -407,7 +421,7 @@ def run(config: dict, data_root: Path):
             )
 
             selected_meta = []
-            for l, h in selected:
+            for l, h, pct, lbl in selected:
                 lk = f"layer_{l}"
                 hk = f"head_{h}"
                 val = 0.0
@@ -422,6 +436,8 @@ def run(config: dict, data_root: Path):
                     "layer": l, "q_head": h,
                     "kv_head": h // gqa,
                     "nonlocal_entropy": val,
+                    "percentile": pct,
+                    "selection_label": lbl,
                 })
 
             head_stats_meta = {
@@ -446,8 +462,8 @@ def run(config: dict, data_root: Path):
             )
             print(f"    Selected {len(selected)} heads: "
                   + ", ".join(
-                      f"L{l}H{h}"
-                      for l, h in selected
+                      f"L{l}H{h}({lbl})"
+                      for l, h, _, lbl in selected
                   ))
 
             # ── Per-example all-heads statistics ──
@@ -521,8 +537,8 @@ def run(config: dict, data_root: Path):
         # heads, and only extract the right heads at
         # each layer. This is critical for disk space.
         pairs = [
-            (l, h, h // gqa)
-            for l, h in selected
+            (s["layer"], s["q_head"], s["kv_head"])
+            for s in selected_meta
         ]
         layer_head_map = {}
         for l, h, k in pairs:
@@ -578,11 +594,7 @@ def run(config: dict, data_root: Path):
             example_ids=[
                 e["id"] for e in extracted
             ],
-            selected_heads=[
-                {"layer": l, "q_head": h,
-                 "kv_head": k}
-                for l, h, k in pairs
-            ],
+            selected_heads=selected_meta,
         )
 
     print("\nExtraction complete.")

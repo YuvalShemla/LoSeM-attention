@@ -397,3 +397,117 @@ def plot_overview(
             out_dir / f"cross_task_summary_{scale}.png",
             dpi=dpi,
         )
+
+
+def plot_per_head_comparison(
+    per_head_aggs: Dict[int, Dict],
+    out_dir: Path,
+    plot_cfg: Dict,
+    budgets: List[int],
+    algorithm_families: List[Dict],
+    task_name: str = "",
+):
+    """
+    Per-head subplot comparison.
+
+    per_head_aggs: {head_idx: {agg, layer, q_head,
+        selection_label, nonlocal_entropy, ...}}
+    """
+    setup_style()
+    n = len(per_head_aggs)
+    if n == 0:
+        return
+
+    figsize = tuple(plot_cfg.get("figsize", [16, 10]))
+    dpi = plot_cfg.get("dpi", 200)
+    show_bands = plot_cfg.get("error_bands", True)
+
+    cols = min(n, 3)
+    rows_n = (n + cols - 1) // cols
+
+    scales = []
+    if plot_cfg.get("log_scale", True):
+        scales.append(True)
+    if plot_cfg.get("linear_scale", True):
+        scales.append(False)
+
+    sorted_idxs = sorted(per_head_aggs.keys())
+
+    for log_scale in scales:
+        scale = "log" if log_scale else "linear"
+        fig, axes = plt.subplots(
+            rows_n, cols,
+            figsize=(
+                figsize[0],
+                figsize[1] * rows_n / 2,
+            ),
+            squeeze=False,
+        )
+
+        for i, idx in enumerate(sorted_idxs):
+            r, c = divmod(i, cols)
+            ax = axes[r][c]
+            info = per_head_aggs[idx]
+            agg = info["agg"]
+
+            plot_baselines(
+                ax, agg, budgets, plot_cfg,
+            )
+            for fam in algorithm_families:
+                plot_algorithm_family(
+                    ax, agg,
+                    prefix=fam["prefix"],
+                    label=fam["label"],
+                    color_topk=fam["color_topk"],
+                    color_hybrid=fam["color_hybrid"],
+                    marker=fam["marker"],
+                    top_k_sweep=fam["top_k_sweep"],
+                    show_bands=show_bands,
+                )
+
+            title = (
+                f"L{info['layer']}H{info['q_head']}"
+            )
+            lbl = info.get("selection_label", "")
+            ent = info.get("nonlocal_entropy")
+            if lbl:
+                title += f" ({lbl}"
+                if ent is not None:
+                    title += f", ent={ent:.2f}"
+                title += ")"
+            elif ent is not None:
+                title += f" (ent={ent:.2f})"
+            ax.set_title(title, fontsize=10)
+
+            if log_scale:
+                ax.set_xscale("log")
+                ax.set_yscale("log")
+                _format_log_axes(ax)
+            ax.grid(
+                True, alpha=0.3, ls="--",
+                which="both",
+            )
+            if i == 0:
+                ax.legend(
+                    fontsize=6, loc="upper right",
+                )
+
+        for i in range(n, rows_n * cols):
+            r, c = divmod(i, cols)
+            axes[r][c].set_visible(False)
+
+        suptitle = "Per-Head Comparison"
+        if task_name:
+            suptitle = f"{task_name} — {suptitle}"
+        suptitle += f" ({scale})"
+        fig.suptitle(
+            suptitle, fontsize=14,
+            fontweight="bold",
+        )
+        plt.tight_layout()
+        save_figure(
+            fig,
+            out_dir
+            / f"per_head_comparison_{scale}.png",
+            dpi=dpi,
+        )

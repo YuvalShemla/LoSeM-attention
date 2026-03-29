@@ -34,7 +34,8 @@ from .evaluator import (
     aggregate_query_stats,
 )
 from .plotting import (
-    plot_experiment, plot_overview, setup_style,
+    plot_experiment, plot_overview,
+    plot_per_head_comparison, setup_style,
 )
 
 log = logging.getLogger("experiment")
@@ -177,7 +178,7 @@ class Experiment:
         methods = baselines + algorithms
 
         # --- Log experiment plan ---
-        phase, _ = self._resolve_heads(
+        phase, _, _ = self._resolve_heads(
             self.tasks[0]
         )
         n_heads = self._count_heads()
@@ -279,7 +280,7 @@ class Experiment:
         starting. Fail fast with a clear message.
         """
         for task in self.tasks:
-            phase, heads = self._resolve_heads(task)
+            phase, heads, _ = self._resolve_heads(task)
             n_available = count_examples(
                 self.vectors_dir, task, phase,
             )
@@ -317,8 +318,11 @@ class Experiment:
         task_dir = self.out_dir / "per_task" / task
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        phase, heads = self._resolve_heads(task)
+        phase, heads, head_meta = (
+            self._resolve_heads(task)
+        )
         all_results = []
+        per_head_results = {}
         rows = []
         example_ids = set()
 
@@ -384,6 +388,9 @@ class Experiment:
                         ),
                     )
                     all_results.append(qr)
+                    per_head_results.setdefault(
+                        hi - 1, []
+                    ).append(qr)
                     for key, val in qr.items():
                         if key == "_query_stats":
                             continue
@@ -428,6 +435,48 @@ class Experiment:
             title=f"{task} ({phase or 'flat'})",
             n_queries=n_total,
         )
+
+        # Per-head aggregation and plots
+        per_head_dir = task_dir / "per_head"
+        per_head_dir.mkdir(exist_ok=True)
+        per_head_aggs = {}
+        for idx, results in per_head_results.items():
+            l, h, k = heads[idx]
+            hm = head_meta[idx] if head_meta else {}
+            label = hm.get("selection_label", "")
+            ent = hm.get("nonlocal_entropy")
+            tag = f"L{l}H{h}"
+            if label:
+                tag += f"_{label}"
+            head_agg = aggregate_results(results)
+            per_head_aggs[idx] = {
+                "agg": head_agg,
+                "layer": l, "q_head": h,
+                "kv_head": k,
+                "n_queries": len(results),
+                "selection_label": label,
+                "nonlocal_entropy": ent,
+            }
+            self._save_json(
+                f"per_task/{task}/per_head/"
+                f"{tag}.json",
+                {
+                    "layer": l, "q_head": h,
+                    "kv_head": k,
+                    "selection_label": label,
+                    "nonlocal_entropy": ent,
+                    "n_queries": len(results),
+                    "aggregated_stats": head_agg,
+                },
+            )
+
+        if len(per_head_aggs) > 1:
+            plot_per_head_comparison(
+                per_head_aggs, task_dir,
+                self.config.get("plotting", {}),
+                self.budgets, families,
+                task_name=task,
+            )
 
         self._save_json(
             f"per_task/{task}/aggregated_stats.json",
@@ -496,12 +545,16 @@ class Experiment:
 
     def _resolve_heads(self, task):
         """
-        Determine (phase, heads) from head_mode config.
+        Determine (phase, heads, head_meta) from config.
 
-        Returns (phase_str, list of
-                 (layer, q_head, kv_head)).
+        Returns (phase_str,
+                 list of (layer, q_head, kv_head),
+                 list of meta dicts or None).
         phase is None for flat layout, or a string
         for legacy phase-based layout.
+        head_meta entries have percentile,
+        nonlocal_entropy, selection_label when
+        available.
         """
         mode = self.head_mode
 
@@ -518,7 +571,7 @@ class Experiment:
                 for h in ch
             ]
             phase = self._detect_phase(task)
-            return phase, triples
+            return phase, triples, None
 
         if mode == "selected_heads":
             # Try flat layout first
@@ -554,11 +607,24 @@ class Experiment:
                     f"metadata.json for {task} has no "
                     f"selected_heads list."
                 )
-            return phase, [
+            triples = [
                 (s["layer"], s["q_head"],
                  s["kv_head"])
                 for s in sel
             ]
+            head_meta = [
+                {
+                    "percentile": s.get("percentile"),
+                    "nonlocal_entropy": s.get(
+                        "nonlocal_entropy"
+                    ),
+                    "selection_label": s.get(
+                        "selection_label"
+                    ),
+                }
+                for s in sel
+            ]
+            return phase, triples, head_meta
 
         if mode == "all_heads":
             triples = []
@@ -568,7 +634,7 @@ class Experiment:
                         (layer, h,
                          h // self.gqa_group)
                     )
-            return "all_heads", triples
+            return "all_heads", triples, None
 
         raise ValueError(
             f"Unknown head_mode: '{mode}'. "
