@@ -109,18 +109,18 @@ experiment:
 # expand_from_config() generates all combos.
 algorithm_configs:
   meanq:
-    n_groups: 32
+    n_groups: 256
     modes: ["topk", "hybrid"]
-    top_k_sweep: [0, 1, 2, 3, 5, 7, 10]
+    top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
   multiq:
-    n_query_clusters: [32, 64, 128, 256]
-    n_groups: 32
+    n_query_clusters: [256]
+    n_groups: 256
     modes: ["topk", "hybrid"]
-    top_k_sweep: [0, 1, 2, 3, 5, 7, 10]
+    top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
   kmeans:
     n_clusters: 256
     modes: ["topk", "hybrid"]
-    top_k_sweep: [0, 1, 2, 3, 5, 7, 10]
+    top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
 
 # ── Plot Settings ──
 plotting:
@@ -130,7 +130,7 @@ plotting:
   linear_scale: true
   baseline_linestyle: "--"
   algorithm_linestyle: "-"
-  error_bands: true
+  error_bands: false
 
   baseline_colors:
     OracleTopK: "#d62728"                    # red

@@ -92,12 +92,15 @@ class OracleTopK(AttentionAlgorithm):
 
 class OracleSampling(AttentionAlgorithm):
     """
-    Sample B keys proportional to true attention weights,
-    simple average of sampled values (unbiased estimator).
+    Always include special keys (sink + local window),
+    then sample `budget` additional candidates
+    proportional to the candidate-only attention
+    distribution. Renormalize softmax over the union.
 
-    Privileged baseline (needs true weights). Sampling from
-    the true distribution and averaging gives E[output] =
-    exact attention output.
+    Consistent with OracleTopK: both always include
+    special keys and select `budget` candidates on top.
+    TopK picks the highest-logit candidates; Sampling
+    draws from the renormalized candidate distribution.
     """
 
     @property
@@ -120,21 +123,52 @@ class OracleSampling(AttentionAlgorithm):
     ) -> AttentionOutput:
         logits = problem.logits
         values = problem.values
-        n_keys = len(logits)
+        special_idx = problem.special_idx
+        candidate_idx = problem.candidate_idx
+        n_cand = len(candidate_idx)
 
-        true_weights = softmax(logits)
-        buse = min(budget, n_keys)
+        if n_cand == 0:
+            output = subset_attention(
+                logits, values, special_idx,
+            )
+            return AttentionOutput(
+                output=output,
+                actual_budget=len(special_idx),
+                selected_indices=special_idx,
+            )
 
-        sampled = rng.choice(
-            n_keys, size=buse,
-            p=true_weights, replace=True,
+        buse = min(budget, n_cand)
+
+        # Sample with replacement until we collect
+        # exactly `buse` unique candidates
+        cand_logits = logits[candidate_idx]
+        cand_w = softmax(cand_logits)
+        unique_pos = set()
+        while len(unique_pos) < buse:
+            batch = min(
+                buse * 2, n_cand * 4,
+            )
+            drawn = rng.choice(
+                n_cand, size=batch,
+                p=cand_w, replace=True,
+            )
+            unique_pos.update(drawn.tolist())
+        # Trim to exact budget
+        unique_pos = list(unique_pos)[:buse]
+        sampled_idx = candidate_idx[unique_pos]
+
+        all_idx = np.unique(
+            np.concatenate([special_idx, sampled_idx])
+            .astype(np.int64)
         )
-        output = np.mean(values[sampled], axis=0)
+        output = subset_attention(
+            logits, values, all_idx,
+        )
 
         return AttentionOutput(
             output=output,
-            actual_budget=len(np.unique(sampled)),
-            selected_indices=np.unique(sampled),
+            actual_budget=len(all_idx),
+            selected_indices=all_idx,
         )
 
     @staticmethod

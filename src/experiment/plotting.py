@@ -112,10 +112,10 @@ def plot_baselines(
             label="OracleTopK (individual keys)",
         )
 
-    # Oracle — green dashed line
+    # OracleSampling — green dashed line
     x, y, s = [], [], []
     for b in budgets:
-        k = f"Oracle-{b}"
+        k = f"OracleSampling-{b}"
         if k in agg:
             x.append(agg[k]["budget_mean"])
             y.append(agg[k]["error_mean"])
@@ -252,7 +252,13 @@ def plot_experiment(
     dpi = plot_cfg.get("dpi", 200)
     show_bands = plot_cfg.get("error_bands", True)
 
-    for log_scale in [True, False]:
+    scales = []
+    if plot_cfg.get("log_scale", True):
+        scales.append(True)
+    if plot_cfg.get("linear_scale", True):
+        scales.append(False)
+
+    for log_scale in scales:
         scale = "log" if log_scale else "linear"
         fig, ax = plt.subplots(1, 1, figsize=figsize)
 
@@ -334,50 +340,60 @@ def plot_overview(
     dpi = plot_cfg.get("dpi", 200)
     show_bands = plot_cfg.get("error_bands", True)
 
+    scales = []
+    if plot_cfg.get("log_scale", True):
+        scales.append(True)
+    if plot_cfg.get("linear_scale", True):
+        scales.append(False)
+
     cols = min(n, 3)
     rows_n = (n + cols - 1) // cols
-    fig, axes = plt.subplots(
-        rows_n, cols,
-        figsize=(figsize[0], figsize[1] * rows_n / 2),
-        squeeze=False,
-    )
 
-    for i, task in enumerate(tasks):
-        r, c = divmod(i, cols)
-        ax = axes[r][c]
-        agg = per_task_agg[task]
-        plot_baselines(ax, agg, budgets, plot_cfg)
-        for fam in algorithm_families:
-            plot_algorithm_family(
-                ax, agg,
-                prefix=fam["prefix"],
-                label=fam["label"],
-                color_topk=fam["color_topk"],
-                color_hybrid=fam["color_hybrid"],
-                marker=fam["marker"],
-                top_k_sweep=fam["top_k_sweep"],
-                show_bands=show_bands,
-            )
-        ax.set_title(task, fontsize=11)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        _format_log_axes(ax)
-        ax.grid(True, alpha=0.3, ls="--",
-                which="both")
-        if i == 0:
-            ax.legend(fontsize=7, loc="upper right")
+    for log_scale in scales:
+        scale = "log" if log_scale else "linear"
+        fig, axes = plt.subplots(
+            rows_n, cols,
+            figsize=(figsize[0], figsize[1] * rows_n / 2),
+            squeeze=False,
+        )
 
-    # Hide unused subplots
-    for i in range(n, rows_n * cols):
-        r, c = divmod(i, cols)
-        axes[r][c].set_visible(False)
+        for i, task in enumerate(tasks):
+            r, c = divmod(i, cols)
+            ax = axes[r][c]
+            agg = per_task_agg[task]
+            plot_baselines(ax, agg, budgets, plot_cfg)
+            for fam in algorithm_families:
+                plot_algorithm_family(
+                    ax, agg,
+                    prefix=fam["prefix"],
+                    label=fam["label"],
+                    color_topk=fam["color_topk"],
+                    color_hybrid=fam["color_hybrid"],
+                    marker=fam["marker"],
+                    top_k_sweep=fam["top_k_sweep"],
+                    show_bands=show_bands,
+                )
+            ax.set_title(task, fontsize=11)
+            if log_scale:
+                ax.set_xscale("log")
+                ax.set_yscale("log")
+                _format_log_axes(ax)
+            ax.grid(True, alpha=0.3, ls="--",
+                    which="both")
+            if i == 0:
+                ax.legend(fontsize=7, loc="upper right")
 
-    fig.suptitle(
-        "Cross-Task Summary", fontsize=14,
-        fontweight="bold",
-    )
-    plt.tight_layout()
-    save_figure(
-        fig, out_dir / "cross_task_summary.png",
-        dpi=dpi,
-    )
+        for i in range(n, rows_n * cols):
+            r, c = divmod(i, cols)
+            axes[r][c].set_visible(False)
+
+        fig.suptitle(
+            f"Cross-Task Summary ({scale})",
+            fontsize=14, fontweight="bold",
+        )
+        plt.tight_layout()
+        save_figure(
+            fig,
+            out_dir / f"cross_task_summary_{scale}.png",
+            dpi=dpi,
+        )

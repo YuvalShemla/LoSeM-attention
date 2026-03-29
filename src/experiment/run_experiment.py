@@ -204,10 +204,9 @@ class Experiment:
         # --- Validate data before running ---
         self._validate_data()
 
-        self._save_spec(methods, algo_names)
-
         all_rows = []
         per_task_agg = {}
+        per_task_detail = {}
         tasks_completed = []
         tasks_failed = []
 
@@ -220,16 +219,23 @@ class Experiment:
             log.info(task_header)
             log.info("=" * 50)
             try:
-                task_rows, task_agg = self._run_task(
-                    task, methods, algorithms, rng,
+                task_rows, task_agg, task_detail = (
+                    self._run_task(
+                        task, methods, algorithms, rng,
+                    )
                 )
                 all_rows.extend(task_rows)
                 per_task_agg[task] = task_agg
+                per_task_detail[task] = task_detail
                 tasks_completed.append(task)
             except Exception as e:
                 log.error("FAILED %s: %s", task, e)
                 tasks_failed.append(task)
                 raise
+
+        self._save_spec(
+            methods, algo_names, per_task_detail,
+        )
 
         if per_task_agg:
             families = self._build_families(algorithms)
@@ -314,6 +320,7 @@ class Experiment:
         phase, heads = self._resolve_heads(task)
         all_results = []
         rows = []
+        example_ids = set()
 
         for hi, (layer_idx, q_head, kv_head) in (
             enumerate(heads, 1)
@@ -347,6 +354,7 @@ class Experiment:
                     seq_len, self.n_queries,
                 )
 
+                example_ids.add(ex["example_id"])
                 log.info(
                     "    Example %d/%d: %s "
                     "(%d tok, %d queries)",
@@ -472,7 +480,17 @@ class Experiment:
             "  Task complete: %d queries, %.1fs",
             n_total, task_elapsed,
         )
-        return rows, agg
+        task_detail = {
+            "heads": [
+                {"layer": l, "q_head": h,
+                 "kv_head": k}
+                for l, h, k in heads
+            ],
+            "examples": sorted(example_ids),
+            "n_queries_per_example": self.n_queries,
+            "total_queries": n_total,
+        }
+        return rows, agg, task_detail
 
     # ── Head resolution ─────────────────────────────
 
@@ -585,6 +603,7 @@ class Experiment:
 
     def _build_families(self, algorithms):
         """Build plot family specs from algorithms."""
+        import re
         colors = self.config.get("plotting", {}).get(
             "algorithm_color_families", []
         )
@@ -597,7 +616,11 @@ class Experiment:
                 if isinstance(m, spec.cls):
                     algo_name = aname
                     break
-            pfx = algo_name or m.name
+            # Derive prefix from instance name by
+            # stripping the trailing -mode-kN suffix
+            pfx = re.sub(
+                r"-(topk|hybrid)-k\d+$", "", m.name,
+            )
             if pfx in seen:
                 continue
             ci = len(seen) % max(len(colors), 1)
@@ -614,7 +637,7 @@ class Experiment:
             )
             families.append({
                 "prefix": pfx,
-                "label": pfx.replace("_", " ").title(),
+                "label": pfx.replace("-", " "),
                 "color_topk": c.get("topk", "#888"),
                 "color_hybrid": c.get(
                     "hybrid", "#444"
@@ -626,17 +649,19 @@ class Experiment:
 
     # ── Save helpers ────────────────────────────────
 
-    def _save_spec(self, methods, algo_names):
+    def _save_spec(self, methods, algo_names,
+                   per_task_detail=None):
         self._save_json("spec.json", {
             "date": datetime.now().isoformat(),
             "algorithms": algo_names,
             "tasks": self.tasks,
             "head_mode": self.head_mode,
-            "n_examples": self.n_examples,
-            "n_queries": self.n_queries,
+            "n_examples_per_task": self.n_examples,
+            "n_queries_per_example": self.n_queries,
             "budgets": self.budgets,
             "seed": self.seed,
             "methods": [m.name for m in methods],
+            "task_details": per_task_detail or {},
             "resolved_config": self.config,
         })
 

@@ -272,11 +272,12 @@ def _head_stats_from_data(layer_data, config):
 def _tokenize_and_sample(
     examples, tokenizer, max_len, n_ex,
 ):
-    """Tokenize all examples, randomly sample n_ex.
+    """Tokenize all examples, take the n_ex shortest.
 
-    Uses a fixed seed (42) for reproducibility.
+    Sorting shortest-first means small examples that
+    fit in VRAM are processed first; if a long one
+    OOMs you still have results from the shorter ones.
     """
-    import random
     candidates = []
     for ex in examples:
         prompt = format_prompt(ex)
@@ -286,10 +287,8 @@ def _tokenize_and_sample(
         candidates.append(
             (len(tokens), ex, tokens)
         )
-    if len(candidates) > n_ex:
-        rng = random.Random(42)
-        candidates = rng.sample(candidates, n_ex)
-    return candidates
+    candidates.sort(key=lambda c: c[0])
+    return candidates[:n_ex]
 
 
 def run(config: dict, data_root: Path):
