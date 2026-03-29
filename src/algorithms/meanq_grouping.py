@@ -54,8 +54,8 @@ class MeanQGrouping(AttentionAlgorithm):
                 "queries and query_positions"
             )
         sqrt_d = np.sqrt(head_dim)
-        # Mean of query vectors at evaluation positions
-        mean_Q = np.mean(queries[query_positions], axis=0)
+        # Mean of ALL query vectors in the sequence
+        mean_Q = np.mean(queries, axis=0)
         # Sort all keys by projection onto mean query
         scores = (keys @ mean_Q) / sqrt_d
         self._sorted_order = np.argsort(scores)[::-1]
