@@ -36,6 +36,12 @@ TASK_CONFIG = {
         "task_field": "task",
         "task_value": "passkey",
     },
+    "kv_retrieval": {
+        "source": "infinitebench",
+        "hf_name": "xinrongzhang2022/InfiniteBench",
+        "task_field": "task",
+        "task_value": "kv_retrieval",
+    },
     # LongBench v2 tasks
     "multi_doc_qa": {
         "source": "longbench_v2",
