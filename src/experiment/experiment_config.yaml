@@ -23,12 +23,12 @@ model:
 # ── Data Paths ──
 # Relative to working directory, or absolute.
 data:
-  vectors_dir: "data/vectors/llama3.1_8b"
+  vectors_dir: "data/vectors"
   results_dir: "results"
 
 # ── Tasks ──
 # Which tasks to evaluate. Must match directories
-# inside vectors_dir/{phase}/.
+# inside vectors_dir/.
 tasks:
   - math_calc
   - code_run
@@ -69,8 +69,8 @@ tasks:
 
 experiment:
   seed: 42
-  n_queries: 100        # query positions per example (last N tokens)
-  n_examples: 10        # examples per task (strict)
+  n_queries: 10         # query positions per example (last N tokens)
+  n_examples: 1         # examples per task (strict)
 
   # Compute per-query attention statistics (entropy,
   # top-100 mass) alongside error metrics. Nearly free

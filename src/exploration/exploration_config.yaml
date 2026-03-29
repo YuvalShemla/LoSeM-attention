@@ -16,7 +16,7 @@ model:
 
 # ── Data Paths ──
 data:
-  vectors_dir: "data/vectors/llama3.1_8b"
+  vectors_dir: "data/vectors"
   results_dir: "results"
 
 # ── Tasks ──

@@ -656,6 +656,298 @@ def _heads_per_task_label(
     return f"~{avg} heads/task"
 
 
+# ── Selected-heads analysis ──────────────────────
+
+PCTL_LABELS = ["P0", "P25", "P50", "P75", "P100"]
+PCTL_COLORS = [
+    "#d62728",  # P0 — red (most concentrated)
+    "#ff7f0e",  # P25 — orange
+    "#2ca02c",  # P25 — green (median)
+    "#1f77b4",  # P75 — blue
+    "#9467bd",  # P100 — purple (most diffuse)
+]
+
+
+def _load_selected_heads(stats_dir: Path, task: str):
+    """Load selected heads info from scout JSON metadata.
+
+    Returns list of dicts with layer, q_head, kv_head,
+    nonlocal_entropy, and a percentile label.
+    """
+    p = stats_dir / f"{task}.json"
+    if not p.exists():
+        return []
+    with open(p) as f:
+        data = json.load(f)
+    meta = data.get("metadata", {})
+    sel = meta.get("selected_heads", [])
+    if not sel:
+        return []
+    # Assign percentile labels (extraction sorts by
+    # ascending entropy, so order = P0, P25, P50, P75, P100)
+    labels = PCTL_LABELS[:len(sel)]
+    for i, s in enumerate(sel):
+        s["label"] = labels[i] if i < len(labels) else f"H{i}"
+        s["short"] = (f"{s['label']}\nL{s['layer']}"
+                      f"H{s['q_head']}")
+    return sel
+
+
+def _get_head_stat(
+    stats: dict, layer: int, q_head: int, metric: str,
+) -> float:
+    """Get a single head's metric value from stats dict."""
+    lk = f"layer_{layer}"
+    hk = f"head_{q_head}"
+    if lk in stats and hk in stats[lk]:
+        return stats[lk][hk].get(metric, float("nan"))
+    return float("nan")
+
+
+def plot_selected_heads_bar(
+    task: str, selected: list, stats: dict,
+    metric_full: str, metric_nsl: str,
+    ylabel: str, title: str,
+    out_path: Path, ylim=None,
+):
+    """Grouped bar: full + nonlocal for each selected head."""
+    n = len(selected)
+    full_vals = [
+        _get_head_stat(
+            stats, s["layer"], s["q_head"], metric_full
+        ) for s in selected
+    ]
+    nsl_vals = [
+        _get_head_stat(
+            stats, s["layer"], s["q_head"], metric_nsl
+        ) for s in selected
+    ]
+    x = np.arange(n)
+    w = 0.35
+    fig, ax = plt.subplots(figsize=(max(7, n * 1.5), 5))
+    bars_f = ax.bar(
+        x - w / 2, full_vals, w,
+        label="Full", color=C_FULL, alpha=0.85,
+    )
+    bars_n = ax.bar(
+        x + w / 2, nsl_vals, w,
+        label="Nonlocal", color=C_NSL, alpha=0.85,
+    )
+    # Color-coded head labels
+    labels = [s["short"] for s in selected]
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=9)
+    for i, tick in enumerate(ax.xaxis.get_ticklabels()):
+        tick.set_color(
+            PCTL_COLORS[i] if i < len(PCTL_COLORS)
+            else "black"
+        )
+    ax.set_ylabel(ylabel)
+    ax.set_title(
+        f"{task} — {title} (selected heads)",
+        fontsize=13, fontweight="bold",
+    )
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_selected_heads_across_examples(
+    task: str, selected: list,
+    per_example_stats: List[Tuple[dict, dict]],
+    metric: str, ylabel: str,
+    out_path: Path, ylim=None,
+):
+    """Line plot: one line per selected head across examples."""
+    n_ex = len(per_example_stats)
+    if n_ex == 0:
+        return
+    is_full = metric.startswith("full_")
+    fig, ax = plt.subplots(
+        figsize=(max(6, n_ex * 1.2), 5),
+    )
+    x = np.arange(n_ex)
+    xlabels = []
+    for meta, _ in per_example_stats:
+        slen = meta.get("sequence_length", 0)
+        xlabels.append(f"{slen:,}\ntok")
+
+    for i, s in enumerate(selected):
+        vals = []
+        for _, stats in per_example_stats:
+            vals.append(_get_head_stat(
+                stats, s["layer"], s["q_head"], metric,
+            ))
+        color = (
+            PCTL_COLORS[i] if i < len(PCTL_COLORS)
+            else f"C{i}"
+        )
+        ax.plot(
+            x, vals, marker="o", linewidth=2,
+            markersize=7, color=color,
+            label=f"{s['label']} L{s['layer']}H{s['q_head']}",
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(xlabels, fontsize=9)
+    ax.set_xlabel("Example")
+    ax.set_ylabel(ylabel)
+    kind = "Full" if is_full else "Nonlocal"
+    ax.set_title(
+        f"{task} — {kind} {_metric_display(metric)} "
+        f"across Examples",
+        fontsize=13, fontweight="bold",
+    )
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    ax.legend(fontsize=8, loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_selected_heads_cross_task(
+    all_selected: Dict[str, list],
+    all_stats: dict,
+    metric: str, ylabel: str,
+    out_path: Path, ylim=None,
+):
+    """Bar chart: each task shows 5 heads side by side."""
+    tasks = [t for t in all_stats if t in all_selected]
+    if not tasks:
+        return
+    n_tasks = len(tasks)
+    max_heads = max(
+        len(all_selected[t]) for t in tasks
+    )
+    is_full = metric.startswith("full_")
+
+    fig, ax = plt.subplots(
+        figsize=(max(8, n_tasks * 2.5), 5.5),
+    )
+    group_width = 0.8
+    bar_w = group_width / max(max_heads, 1)
+
+    for hi in range(max_heads):
+        offsets = []
+        vals = []
+        for ti, task in enumerate(tasks):
+            sel = all_selected[task]
+            if hi < len(sel):
+                s = sel[hi]
+                vals.append(_get_head_stat(
+                    all_stats[task],
+                    s["layer"], s["q_head"], metric,
+                ))
+            else:
+                vals.append(float("nan"))
+            offsets.append(
+                ti - group_width / 2
+                + (hi + 0.5) * bar_w
+            )
+        label = (
+            PCTL_LABELS[hi] if hi < len(PCTL_LABELS)
+            else f"H{hi}"
+        )
+        color = (
+            PCTL_COLORS[hi] if hi < len(PCTL_COLORS)
+            else f"C{hi}"
+        )
+        ax.bar(
+            offsets, vals, bar_w * 0.9,
+            label=label, color=color, alpha=0.85,
+        )
+
+    ax.set_xticks(range(n_tasks))
+    ax.set_xticklabels(tasks, fontsize=9)
+    kind = "Full" if is_full else "Nonlocal"
+    ax.set_ylabel(ylabel)
+    ax.set_title(
+        f"Selected Heads — {kind} "
+        f"{_metric_display(metric)} across Tasks",
+        fontsize=13, fontweight="bold",
+    )
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    ax.legend(fontsize=9, loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def generate_selected_heads_plots(
+    stats_dir: Path, all_stats: dict,
+    per_example_data: Dict[str, List[Tuple[dict, dict]]],
+    out_dir: Path,
+):
+    """Generate the full selected-heads visualization hierarchy."""
+    sel_dir = out_dir / "selected_heads"
+    sel_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load selected heads for all tasks
+    all_selected: Dict[str, list] = {}
+    for task in all_stats:
+        sel = _load_selected_heads(stats_dir, task)
+        if sel:
+            all_selected[task] = sel
+    if not all_selected:
+        print("  No selected heads metadata found")
+        return
+
+    print(f"  Selected heads for: "
+          f"{list(all_selected.keys())}")
+
+    # ── Cross-task selected heads ──
+    for metric in METRICS:
+        ylabel = _metric_ylabel(metric)
+        ylim = (-0.05, 1.08) if "mass" in metric else None
+        plot_selected_heads_cross_task(
+            all_selected, all_stats, metric, ylabel,
+            sel_dir / f"cross_task_{metric}.png",
+            ylim=ylim,
+        )
+
+    # ── Per-task selected heads ──
+    for task in all_selected:
+        selected = all_selected[task]
+        stats = all_stats[task]
+        td = sel_dir / "per_task" / task
+        td.mkdir(parents=True, exist_ok=True)
+
+        print(f"    {task}: {len(selected)} selected heads")
+
+        # Bar chart: 5 heads, full vs nonlocal
+        for (m_full, m_nsl, suffix, ylabel,
+             title, ylim) in METRIC_PAIRS:
+            plot_selected_heads_bar(
+                task, selected, stats,
+                m_full, m_nsl, ylabel, title,
+                td / f"selected_{suffix}.png",
+                ylim=ylim,
+            )
+
+        # Per-example stability of selected heads
+        pe = per_example_data.get(task, [])
+        if not pe:
+            continue
+
+        for metric in METRICS:
+            ylabel = _metric_ylabel(metric)
+            ylim = (
+                (-0.05, 1.08) if "mass" in metric
+                else None
+            )
+            plot_selected_heads_across_examples(
+                task, selected, pe,
+                metric, ylabel,
+                td / f"across_examples_{metric}.png",
+                ylim=ylim,
+            )
+
+
 # ── Main ──────────────────────────────────────────
 
 def main():
@@ -798,6 +1090,13 @@ def main():
                 td / f"stability_{metric}.png",
                 ylim=ylim,
             )
+
+    # ── Selected-heads analysis ──
+    print("Selected-heads analysis...")
+    generate_selected_heads_plots(
+        args.stats_dir, all_stats,
+        per_example_data, out,
+    )
 
     print(f"\nDone. Output in {out}/")
 

@@ -564,7 +564,7 @@ class Experiment:
             return len(self.layers) * self.n_q_heads
         if self.head_mode == "custom":
             return len(self.custom_heads)
-        return 3  # typical selected_heads count
+        return 5  # typical selected_heads count
 
     def _detect_phase(self, task):
         """Check which directory layout exists.

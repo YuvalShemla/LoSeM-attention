@@ -1,0 +1,11 @@
+{
+  "example_id": "math_calc_47",
+  "sequence_length": 45018,
+  "question": "What's the intermediate results of the given numerical expression?",
+  "answer": "[11, 72, 36, 23, 35, 16, 79, 97, 74, 49, 85, 85, 93, 96, 99, 99, 99, 94, 18, 22, 34, 70, 79, 19, 58, 49, 65, 32, 76, 83, 45, 23, 97, 97, 54, 92, 10, 92, 96, 98, 98, 30, 4, 1, 0, 80, 46, 68, 85, 67, 16",
+  "context_chars": 69141,
+  "heads_extracted": "L26H12,L31H24,L6H4,L12H14,L1H2",
+  "rope_included": true,
+  "raw_included": true,
+  "backend": "cuda"
+}

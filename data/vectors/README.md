@@ -1,42 +1,40 @@
 # Attention Vectors
 
-Per-layer bfloat16 `.pt` files containing Q, K, V
-attention vectors extracted from Llama 3.1 8B.
+Per-layer bfloat16 `.pt` files containing Q, K, V attention vectors extracted from Llama 3.1 8B.
 
 ## Structure
 
+Flat layout: one directory per task, with per-example subdirectories. Only the layers containing selected heads are saved (not all 32 layers).
+
 ```
 vectors/
-└── llama3.1_8b/
-    ├── all_heads/         # Phase 1: 1 example, all heads
-    │   ├── math_calc/
-    │   │   ├── metadata.json
-    │   │   └── ex_000/
-    │   │       ├── layer_00.pt
-    │   │       ├── layer_17.pt
-    │   │       ├── layer_19.pt
-    │   │       ├── layer_31.pt
-    │   │       └── example.json
+└── math_calc/
+    ├── metadata.json
+    ├── ex_000/
+    │   ├── example.json
+    │   ├── layer_01.pt
+    │   ├── layer_06.pt
+    │   ├── layer_12.pt
+    │   ├── layer_26.pt
+    │   └── layer_31.pt
+    ├── ex_001/
     │   └── ...
-    └── selected_heads/    # Phase 2: 10 examples, 3 heads
-        ├── math_calc/
-        │   ├── metadata.json
-        │   └── ex_000/ ... ex_009/
-        └── ...
+    └── ex_004/
 ```
+
+Each task has 5 examples, and each example contains only the layers where selected heads reside. The selected heads (5 per task) are chosen by nonlocal entropy percentile during the extraction scout pass.
 
 ## .pt File Contents
 
-Each `layer_XX.pt` is a dict of bfloat16 tensors:
+Each `layer_XX.pt` contains only the selected Q and KV heads for that layer:
 
 ```python
 {
-    "Q_rope_head0":   # [seq_len, 128] with RoPE
-    "Q_raw_head0":    # [seq_len, 128] without RoPE
-    "K_rope_kvhead0": # [seq_len, 128] with RoPE
-    "K_raw_kvhead0":  # [seq_len, 128] without RoPE
-    "V_kvhead0":      # [seq_len, 128] (no RoPE on V)
-    ...               # more heads
+    "Q_rope_head12":   # [seq_len, 128] with RoPE
+    "Q_raw_head12":    # [seq_len, 128] without RoPE
+    "K_rope_kvhead3":  # [seq_len, 128] with RoPE
+    "K_raw_kvhead3":   # [seq_len, 128] without RoPE
+    "V_kvhead3":       # [seq_len, 128] (no RoPE on V)
 }
 ```
 
@@ -50,26 +48,51 @@ Each `layer_XX.pt` is a dict of bfloat16 tensors:
 
 GQA mapping: Q head i maps to KV head `i // 4`.
 
+## Selected Heads
+
+The extraction pipeline selects 5 heads per task by nonlocal entropy percentile:
+
+| Percentile | Meaning |
+|-----------|---------|
+| P0 | Most concentrated attention (lowest nonlocal entropy) |
+| P25 | Below-average diffusion |
+| P50 | Median behavior |
+| P75 | Above-average diffusion |
+| P100 | Most diffuse attention (highest nonlocal entropy) |
+
+The selected heads and their layer/head indices are in `metadata.json`:
+
+```json
+{
+  "selected_heads": [
+    {"layer": 26, "q_head": 12, "kv_head": 3},
+    {"layer": 31, "q_head": 24, "kv_head": 6},
+    {"layer": 6,  "q_head": 4,  "kv_head": 1},
+    {"layer": 12, "q_head": 14, "kv_head": 3},
+    {"layer": 1,  "q_head": 2,  "kv_head": 0}
+  ]
+}
+```
+
 ## Loading
 
 ```python
 import torch
 tensors = torch.load(
-    "layer_17.pt", map_location="cpu",
+    "layer_26.pt", map_location="cpu",
     weights_only=True,
 )
-# Get Q head 0, K/V from KV head 0
-Q = tensors["Q_rope_head0"].float().numpy()
-K = tensors["K_rope_kvhead0"].float().numpy()
-V = tensors["V_kvhead0"].float().numpy()
+Q = tensors["Q_rope_head12"].float().numpy()
+K = tensors["K_rope_kvhead3"].float().numpy()
+V = tensors["V_kvhead3"].float().numpy()
 ```
 
 Or use the data loader:
 ```python
 from src.experiment.data_loader import load_examples
 for ex in load_examples(
-    vectors_dir, "math_calc",
-    layer=17, head=0, kv_head=0,
+    "data/vectors", "math_calc",
+    layer=26, head=12, kv_head=3,
 ):
     Q, K, V = ex["Q"], ex["K"], ex["V"]
 ```
@@ -82,27 +105,28 @@ for ex in load_examples(
   "task": "math_calc",
   "source": "infinitebench",
   "model": "meta-llama/Meta-Llama-3.1-8B",
-  "extraction_date": "2026-03-18",
-  "layers_extracted": [0, 17, 19, 31],
-  "n_examples": 1
+  "layers_extracted": [1, 6, 12, 26, 31],
+  "n_examples": 5,
+  "selected_heads": [...],
+  "extraction_config": {
+    "max_length": 125000,
+    "store_raw_vectors": true,
+    "store_rope_vectors": true
+  }
 }
 ```
 
 **`example.json`** (per example):
 ```json
 {
-  "example_id": "math_calc_0",
+  "example_id": "math_calc_40",
   "sequence_length": 45018,
-  "heads_extracted": "all",
+  "heads_extracted": "L26H12,L31H24,L6H4,L12H14,L1H2",
   "rope_included": true,
   "raw_included": true
 }
 ```
 
-## Storage Estimates
+## Storage
 
-| Phase | Storage |
-|-------|-------:|
-| Phase 1 (all heads, 1 ex/task) | ~46 GB |
-| Phase 2 (3 heads, 10 ex/task) | ~79 GB |
-| **Total** | **~125 GB** |
+With per-layer head selection (only selected heads saved at their specific layers), each example is ~275 MB. Total for 5 examples per task: ~1.4 GB per task.

@@ -1,0 +1,63 @@
+{
+  "task": "math_calc",
+  "source": "infinitebench",
+  "model": "meta-llama/Meta-Llama-3.1-8B",
+  "extraction_date": "2026-03-28T23:03:57.104231",
+  "layers_extracted": [
+    1,
+    6,
+    12,
+    26,
+    31
+  ],
+  "n_examples": 5,
+  "backend": "cuda",
+  "selected_heads": [
+    {
+      "layer": 26,
+      "q_head": 12,
+      "kv_head": 3
+    },
+    {
+      "layer": 31,
+      "q_head": 24,
+      "kv_head": 6
+    },
+    {
+      "layer": 6,
+      "q_head": 4,
+      "kv_head": 1
+    },
+    {
+      "layer": 12,
+      "q_head": 14,
+      "kv_head": 3
+    },
+    {
+      "layer": 1,
+      "q_head": 2,
+      "kv_head": 0
+    }
+  ],
+  "head_statistics_params": {
+    "n_queries": 10,
+    "n_sink_tokens": 1,
+    "local_window": 1024,
+    "top_pct_for_mass": [
+      1,
+      5
+    ]
+  },
+  "extraction_config": {
+    "max_length": 125000,
+    "store_raw_vectors": true,
+    "store_rope_vectors": true
+  },
+  "example_ids": [
+    "math_calc_40",
+    "math_calc_7",
+    "math_calc_1",
+    "math_calc_47",
+    "math_calc_17"
+  ]
+}
