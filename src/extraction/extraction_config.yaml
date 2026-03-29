@@ -72,7 +72,7 @@ extraction:
   storage_format: "pt_bfloat16"
   store_raw_vectors: true   # pre-RoPE Q and K
   store_rope_vectors: true  # post-RoPE Q and K
-  layers: [1, 6, 12, 26, 31]  # 5 layers spanning the network (use "all" only with >40GB VRAM)
+  layers: [0, 1,2 , 3, 6, 7, 8, 12, 15, 17, 18, 19, 25, 27, 30, 31]  # 16 layers spanning the network (use "all" only with >40GB VRAM)
 
 # ═══════════════════════════════════════════════════
 # Head Selection
