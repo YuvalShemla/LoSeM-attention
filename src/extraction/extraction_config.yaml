@@ -24,7 +24,7 @@ tasks:
   - math_calc            # 19K tok, arithmetic sums
   - code_run             # 75K tok, predict code output
   - longbook_sum_eng     # 120K tok, book summarization
-  - passkey              # 127K tok, passkey retrieval
+  - kv_retrieval         # ~100K tok, key-value dictionary lookup
   - multi_doc_qa         # 61K tok, multi-document QA
   - single_doc_qa        # 85K tok, single-document QA
 
@@ -46,11 +46,11 @@ task_sources:
     hf_name: "xinrongzhang2022/InfiniteBench"
     filter_field: "task"
     filter_value: "longbook_sum_eng"
-  passkey:
+  kv_retrieval:
     benchmark: "infinitebench"
     hf_name: "xinrongzhang2022/InfiniteBench"
     filter_field: "task"
-    filter_value: "passkey"
+    filter_value: "kv_retrieval"
   multi_doc_qa:
     benchmark: "longbench_v2"
     hf_name: "THUDM/LongBench-v2"
@@ -168,11 +168,11 @@ output:
 #   hf_name: "xinrongzhang2022/InfiniteBench"
 #   filter_field: "task"
 #   filter_value: "number_string"
-# kv_retrieval:
+# passkey:
 #   benchmark: "infinitebench"
 #   hf_name: "xinrongzhang2022/InfiniteBench"
 #   filter_field: "task"
-#   filter_value: "kv_retrieval"
+#   filter_value: "passkey"
 # long_in_context_learning:
 #   benchmark: "longbench_v2"
 #   hf_name: "THUDM/LongBench-v2"
