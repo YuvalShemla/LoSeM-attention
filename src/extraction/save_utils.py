@@ -137,10 +137,9 @@ def extract_and_save_examples(
         except (torch.cuda.OutOfMemoryError,
                 RuntimeError) as e:
             if "out of memory" in str(e).lower():
+                gc.collect()
                 torch.cuda.empty_cache()
-                print(f"    OOM at {seq_len} tok, "
-                      f"skipping")
-                continue
+                raise
             raise
         print(f"    {time.time() - t0:.0f}s")
 

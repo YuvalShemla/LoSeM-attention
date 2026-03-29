@@ -285,11 +285,11 @@ def _head_stats_from_data(layer_data, config):
 def _tokenize_and_sample(
     examples, tokenizer, max_len, n_ex,
 ):
-    """Tokenize all examples, take the n_ex shortest.
+    """Tokenize all examples, take the n_ex longest.
 
-    Sorting shortest-first means small examples that
-    fit in VRAM are processed first; if a long one
-    OOMs you still have results from the shorter ones.
+    Sorting longest-first picks examples with the most
+    context, giving richer attention patterns. Sequences
+    exceeding max_len are truncated (keeping the end).
     """
     candidates = []
     for ex in examples:
@@ -300,7 +300,7 @@ def _tokenize_and_sample(
         candidates.append(
             (len(tokens), ex, tokens)
         )
-    candidates.sort(key=lambda c: c[0])
+    candidates.sort(key=lambda c: c[0], reverse=True)
     return candidates[:n_ex]
 
 
@@ -357,30 +357,25 @@ def run(config: dict, data_root: Path):
     print(f"Backend: {backend}, "
           f"head selection: {mode}")
 
-    for task in tasks:
-        print(f"\n  Task: {task}")
+    # ── OOM retry: try max_length, then reduce ──
+    base_max = ext["max_length"]
+    oom_step = 10000
+    oom_attempts = [
+        base_max - i * oom_step for i in range(4)
+    ]
 
-        if task not in task_sources:
-            print(f"    No task_sources entry for "
-                  f"'{task}', skipping")
-            continue
-        tsrc = task_sources[task]
-
-        examples = load_task(task, tsrc)
-        if not examples:
-            print("    No examples, skipping")
-            continue
-
-        # Randomly sample n_ex examples
+    def _try_task(task, tsrc, examples, max_len):
+        """Process one task at max_len. Raises on OOM."""
         candidates = _tokenize_and_sample(
-            examples, tokenizer,
-            ext["max_length"], n_ex,
+            examples, tokenizer, max_len, n_ex,
         )
         save_benchmark_examples(
             [ex for _, ex, _ in candidates],
             task, bdir,
         )
-        print(f"    Sampled {len(candidates)} examples")
+        longest = candidates[0][0] if candidates else 0
+        print(f"    Sampled {len(candidates)} examples "
+              f"(longest={longest}, limit={max_len})")
 
         # ── Scout pass (auto mode) ──
         if mode == "auto":
@@ -389,8 +384,7 @@ def run(config: dict, data_root: Path):
                 backend, model, tokenizer,
                 layers, config, mx=mx,
             )
-            # Use shortest example for speed
-            scout_idx = min(
+            scout_idx = max(
                 range(len(candidates)),
                 key=lambda i: candidates[i][0],
             )
@@ -466,18 +460,23 @@ def run(config: dict, data_root: Path):
                 stats, sdir / f"{task}.json",
                 metadata=head_stats_meta,
             )
-            print(f"    Selected {len(selected)} heads: "
-                  + ", ".join(
-                      f"L{l}H{h}({lbl})"
-                      for l, h, _, lbl in selected
-                  ))
+            print(
+                f"    Selected {len(selected)} heads: "
+                + ", ".join(
+                    f"L{l}H{h}({lbl})"
+                    for l, h, _, lbl in selected
+                ))
 
             # ── Per-example all-heads statistics ──
             if hs_cfg.get(
                 "compute_all_examples", False,
             ):
-                pe_dir = sdir / "per_example" / task
-                pe_dir.mkdir(parents=True, exist_ok=True)
+                pe_dir = (
+                    sdir / "per_example" / task
+                )
+                pe_dir.mkdir(
+                    parents=True, exist_ok=True,
+                )
                 print(f"    Per-example stats: "
                       f"{len(candidates)} examples")
                 for ei, (slen, ex, toks) in enumerate(
@@ -505,8 +504,12 @@ def run(config: dict, data_root: Path):
                         "example_index": ei,
                         "sequence_length": slen,
                         "n_layers": mcfg["num_layers"],
-                        "n_q_heads": mcfg["num_q_heads"],
-                        "n_kv_heads": mcfg["num_kv_heads"],
+                        "n_q_heads": (
+                            mcfg["num_q_heads"]
+                        ),
+                        "n_kv_heads": (
+                            mcfg["num_kv_heads"]
+                        ),
                         "head_dim": mcfg["head_dim"],
                         "head_statistics_params": (
                             hs_params
@@ -520,8 +523,8 @@ def run(config: dict, data_root: Path):
                         pe_dir / f"ex_{ei:03d}.json",
                         metadata=ex_meta,
                     )
-                print(f"    Per-example stats saved to "
-                      f"{pe_dir}")
+                print(f"    Per-example stats saved "
+                      f"to {pe_dir}")
         else:
             explicit = sel_cfg.get("explicit", [])
             selected = [
@@ -535,15 +538,12 @@ def run(config: dict, data_root: Path):
 
         if not selected:
             print("    No heads selected, skipping")
-            continue
+            return
 
         # ── Vectors pass: selected heads only ──
-        # Build per-layer head mapping so we only
-        # hook the specific layers that have selected
-        # heads, and only extract the right heads at
-        # each layer. This is critical for disk space.
         pairs = [
-            (s["layer"], s["q_head"], s["kv_head"])
+            (s["layer"], s["q_head"],
+             s["kv_head"])
             for s in selected_meta
         ]
         layer_head_map = {}
@@ -554,9 +554,14 @@ def run(config: dict, data_root: Path):
             lm["q"].add(h)
             lm["kv"].add(k)
 
-        vec_layers = sorted(layer_head_map.keys())
+        vec_layers = sorted(
+            layer_head_map.keys()
+        )
         per_layer_heads = {
-            l: (sorted(lh["q"]), sorted(lh["kv"]))
+            l: (
+                sorted(lh["q"]),
+                sorted(lh["kv"]),
+            )
             for l, lh in layer_head_map.items()
         }
 
@@ -589,7 +594,7 @@ def run(config: dict, data_root: Path):
             backend=backend,
             head_statistics_params=hs_params,
             extraction_config={
-                "max_length": ext["max_length"],
+                "max_length": max_len,
                 "store_raw_vectors": ext[
                     "store_raw_vectors"
                 ],
@@ -602,6 +607,52 @@ def run(config: dict, data_root: Path):
             ],
             selected_heads=selected_meta,
         )
+
+    for task in tasks:
+        print(f"\n  Task: {task}")
+
+        if task not in task_sources:
+            print(f"    No task_sources entry for "
+                  f"'{task}', skipping")
+            continue
+        tsrc = task_sources[task]
+
+        examples = load_task(task, tsrc)
+        if not examples:
+            print("    No examples, skipping")
+            continue
+
+        # Try decreasing max_length on OOM
+        for ai, max_len in enumerate(oom_attempts):
+            try:
+                _try_task(
+                    task, tsrc, examples, max_len,
+                )
+                break
+            except (Exception,) as e:
+                is_oom = (
+                    "out of memory"
+                    in str(e).lower()
+                )
+                if not is_oom:
+                    raise
+                gc.collect()
+                if backend == "cuda":
+                    import torch
+                    torch.cuda.empty_cache()
+                if ai < len(oom_attempts) - 1:
+                    nxt = oom_attempts[ai + 1]
+                    print(
+                        f"    OOM at limit="
+                        f"{max_len}, retrying "
+                        f"at {nxt}..."
+                    )
+                else:
+                    print(
+                        f"    OOM at limit="
+                        f"{max_len}, no retries "
+                        f"left — skipping {task}"
+                    )
 
     print("\nExtraction complete.")
 
