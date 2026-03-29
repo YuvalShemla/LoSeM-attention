@@ -30,7 +30,6 @@ from ..core import (
 from .load_benchmarks import (
     load_task, save_benchmark_examples,
     format_prompt, tokenize_and_truncate,
-    TASK_CONFIG,
 )
 from .save_utils import (
     save_task_metadata, extract_and_save_examples,
@@ -320,7 +319,8 @@ def run(config: dict, data_root: Path):
     ext = config["extraction"]
     layers = _resolve_layers(config)
     n_ex = ext.get("examples_per_task", 5)
-    tasks = config.get("tasks", list(TASK_CONFIG))
+    task_sources = config.get("task_sources", {})
+    tasks = config.get("tasks", list(task_sources))
     mcfg = config["model"]
     gqa = mcfg["num_q_heads"] // mcfg["num_kv_heads"]
     sel_cfg = config.get("head_selection", {})
@@ -360,7 +360,13 @@ def run(config: dict, data_root: Path):
     for task in tasks:
         print(f"\n  Task: {task}")
 
-        examples = load_task(task)
+        if task not in task_sources:
+            print(f"    No task_sources entry for "
+                  f"'{task}', skipping")
+            continue
+        tsrc = task_sources[task]
+
+        examples = load_task(task, tsrc)
         if not examples:
             print("    No examples, skipping")
             continue
@@ -576,7 +582,7 @@ def run(config: dict, data_root: Path):
         )
 
         save_task_metadata(
-            task, TASK_CONFIG[task]["source"],
+            task, tsrc["benchmark"],
             mcfg["hf_name"], vec_layers,
             len(extracted),
             out / "metadata.json",

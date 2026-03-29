@@ -399,6 +399,65 @@ def plot_overview(
         )
 
 
+def _build_info_panel(ax, per_head_aggs, sorted_idxs,
+                      task_name):
+    """Fill a spare subplot with legend + head table."""
+    ax.axis("off")
+
+    # Collect legend handles from sibling axes
+    fig = ax.get_figure()
+    handles, labels = [], []
+    seen = set()
+    for other in fig.axes:
+        if other is ax:
+            continue
+        for h, l in zip(*other.get_legend_handles_labels()):
+            if l not in seen:
+                seen.add(l)
+                handles.append(h)
+                labels.append(l)
+
+    if handles:
+        ax.legend(
+            handles, labels,
+            loc="upper left",
+            fontsize=9,
+            frameon=True,
+            fancybox=True,
+            shadow=False,
+            borderpad=1.0,
+            labelspacing=0.8,
+            title="Methods",
+            title_fontsize=10,
+        )
+
+    # Head summary table below the legend
+    lines = []
+    for idx in sorted_idxs:
+        info = per_head_aggs[idx]
+        tag = f"L{info['layer']}H{info['q_head']}"
+        lbl = info.get("selection_label", "")
+        ent = info.get("nonlocal_entropy")
+        nq = info.get("n_queries", 0)
+        parts = [tag]
+        if lbl:
+            parts.append(lbl)
+        if ent is not None:
+            parts.append(f"ent={ent:.2f}")
+        parts.append(f"n={nq}")
+        lines.append("  ".join(parts))
+
+    if lines:
+        table_text = "Heads:\n" + "\n".join(lines)
+        ax.text(
+            0.03, 0.02, table_text,
+            transform=ax.transAxes,
+            fontsize=9,
+            fontfamily="monospace",
+            verticalalignment="bottom",
+        )
+
+
 def plot_per_head_comparison(
     per_head_aggs: Dict[int, Dict],
     out_dir: Path,
@@ -412,6 +471,7 @@ def plot_per_head_comparison(
 
     per_head_aggs: {head_idx: {agg, layer, q_head,
         selection_label, nonlocal_entropy, ...}}
+    Uses spare subplot cells for a legend + info panel.
     """
     setup_style()
     n = len(per_head_aggs)
@@ -424,6 +484,9 @@ def plot_per_head_comparison(
 
     cols = min(n, 3)
     rows_n = (n + cols - 1) // cols
+    # Ensure at least one spare cell for info panel
+    if n == rows_n * cols:
+        rows_n += 1
 
     scales = []
     if plot_cfg.get("log_scale", True):
@@ -487,14 +550,21 @@ def plot_per_head_comparison(
                 True, alpha=0.3, ls="--",
                 which="both",
             )
-            if i == 0:
-                ax.legend(
-                    fontsize=6, loc="upper right",
-                )
 
-        for i in range(n, rows_n * cols):
+        # Use the first spare cell for info panel,
+        # hide remaining spare cells
+        spare_start = n
+        info_placed = False
+        for i in range(spare_start, rows_n * cols):
             r, c = divmod(i, cols)
-            axes[r][c].set_visible(False)
+            if not info_placed:
+                _build_info_panel(
+                    axes[r][c], per_head_aggs,
+                    sorted_idxs, task_name,
+                )
+                info_placed = True
+            else:
+                axes[r][c].set_visible(False)
 
         suptitle = "Per-Head Comparison"
         if task_name:

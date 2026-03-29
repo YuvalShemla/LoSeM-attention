@@ -1,59 +1,14 @@
 """
 Load benchmark examples for vector extraction.
 
-Supports InfiniteBench (4 tasks) and LongBench v2 (2 tasks).
-Tokenizes and truncates to config max_length, preserving
-the question/answer portion at the end.
+Supports InfiniteBench and LongBench v2 tasks.
+Task definitions come from extraction_config.yaml's
+task_sources section — no hardcoded registry.
 """
 
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
-
-TASK_CONFIG = {
-    # InfiniteBench tasks
-    "math_calc": {
-        "source": "infinitebench",
-        "hf_name": "xinrongzhang2022/InfiniteBench",
-        "task_field": "task",
-        "task_value": "math_calc",
-    },
-    "code_run": {
-        "source": "infinitebench",
-        "hf_name": "xinrongzhang2022/InfiniteBench",
-        "task_field": "task",
-        "task_value": "code_run",
-    },
-    "longbook_sum_eng": {
-        "source": "infinitebench",
-        "hf_name": "xinrongzhang2022/InfiniteBench",
-        "task_field": "task",
-        "task_value": "longbook_sum_eng",
-    },
-    "passkey": {
-        "source": "infinitebench",
-        "hf_name": "xinrongzhang2022/InfiniteBench",
-        "task_field": "task",
-        "task_value": "passkey",
-    },
-    "kv_retrieval": {
-        "source": "infinitebench",
-        "hf_name": "xinrongzhang2022/InfiniteBench",
-        "task_field": "task",
-        "task_value": "kv_retrieval",
-    },
-    # LongBench v2 tasks
-    "multi_doc_qa": {
-        "source": "longbench_v2",
-        "hf_name": "THUDM/LongBench-v2",
-        "domain_filter": "Multi-Document QA",
-    },
-    "single_doc_qa": {
-        "source": "longbench_v2",
-        "hf_name": "THUDM/LongBench-v2",
-        "domain_filter": "Single-Document QA",
-    },
-}
 
 PROMPT_TEMPLATE = (
     "Context: {context}\n\n"
@@ -65,9 +20,6 @@ PROMPT_TEMPLATE = (
 def _load_infinitebench(task_value: str) -> List[Dict]:
     """Load one InfiniteBench task from HuggingFace."""
     from datasets import load_dataset
-    # Load only the specific task's JSONL file to avoid
-    # schema conflicts between splits (code_debug has
-    # mismatched column types that break the full load).
     ds = load_dataset(
         "xinrongzhang2022/InfiniteBench",
         data_files=f"{task_value}.jsonl",
@@ -114,26 +66,34 @@ def _load_longbench_v2(domain_filter: str) -> List[Dict]:
     return examples
 
 
-def load_task(task_name: str) -> List[Dict]:
+def load_task(
+    task_name: str,
+    task_source: Dict,
+) -> List[Dict]:
     """
     Load all examples for a task.
+
+    task_source: dict from config's task_sources,
+    with keys: benchmark, hf_name, filter_field,
+    filter_value.
 
     Returns list of dicts with: id, task, context,
     question, answer, source.
     """
-    if task_name not in TASK_CONFIG:
-        raise ValueError(
-            f"Unknown task: {task_name}. "
-            f"Available: {list(TASK_CONFIG.keys())}"
-        )
-    cfg = TASK_CONFIG[task_name]
-    if cfg["source"] == "infinitebench":
+    benchmark = task_source["benchmark"]
+    if benchmark == "infinitebench":
         return _load_infinitebench(
-            cfg["task_value"]
+            task_source["filter_value"]
+        )
+    elif benchmark == "longbench_v2":
+        return _load_longbench_v2(
+            task_source["filter_value"]
         )
     else:
-        return _load_longbench_v2(
-            cfg["domain_filter"]
+        raise ValueError(
+            f"Unknown benchmark '{benchmark}' for "
+            f"task '{task_name}'. Supported: "
+            f"infinitebench, longbench_v2"
         )
 
 
@@ -171,7 +131,6 @@ def save_benchmark_examples(
     """Save benchmark examples JSON for provenance."""
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{task_name}.json"
-    # Strip large context field for storage
     saved = []
     for ex in examples:
         entry = {k: v for k, v in ex.items()}
