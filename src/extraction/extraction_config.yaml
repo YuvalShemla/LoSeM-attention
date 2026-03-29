@@ -67,7 +67,7 @@ prompt_template: "Context: {context}\n\nQuestion: {question}\n\nAnswer:"
 
 # ── Extraction ──
 extraction:
-  examples_per_task: 5      # examples to extract per task
+  examples_per_task: 1      # examples to extract per task
   max_length: 125000        # max tokens (125K)
   storage_format: "pt_bfloat16"
   store_raw_vectors: true   # pre-RoPE Q and K
