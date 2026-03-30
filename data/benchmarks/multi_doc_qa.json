@@ -1,0 +1,13 @@
+[
+  {
+    "id": "multi_document_qa_0",
+    "task": "multi_document_qa",
+    "question": "The NSW Health Annual Reports for 2020-21 and 2022-23 reflect changes in strategic priorities, particularly regarding how the health system manages resource allocation in response to both emergent crises and long-term structural improvements. Given the dynamic pressures on the healthcare system, including the pandemic and ongoing structural reforms, which of the following statements best captures the \u2018deeper strategic evolution\u2019 between these two periods in how NSW Health addresses the tension between \u201cimmediate crisis management\u201d and \u201csustainable healthcare innovation\u201d?",
+    "answer": "D",
+    "source": "longbench_v2",
+    "domain": "Multi-Document QA",
+    "sub_domain": "Governmental",
+    "context_chars": 2007494,
+    "context_preview": "1\nNSW Health\nhealth.nsw.gov.au\nAnnual Report\n2020\u201321\n\n\n2\nThe NSW health system \nworks to protect, \npromote and maintain \nthe health and wellbeing \nof the people of NSW. \nOur vision \nA sustainable heal"
+  }
+]

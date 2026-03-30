@@ -2,46 +2,46 @@
   "task": "math_calc",
   "source": "infinitebench",
   "model": "meta-llama/Meta-Llama-3.1-8B",
-  "extraction_date": "2026-03-28T23:03:57.104231",
+  "extraction_date": "2026-03-29T23:18:56.625312",
   "layers_extracted": [
     1,
-    6,
-    12,
-    26,
+    2,
+    18,
+    19,
     31
   ],
-  "n_examples": 5,
+  "n_examples": 1,
   "backend": "cuda",
   "selected_heads": [
     {
-      "layer": 26,
+      "layer": 18,
       "q_head": 12,
       "kv_head": 3,
-      "nonlocal_entropy": 2.078761268346597,
+      "nonlocal_entropy": 1.3355960275042709,
       "percentile": 0,
       "selection_label": "p0_lowest"
     },
     {
-      "layer": 31,
-      "q_head": 24,
-      "kv_head": 6,
-      "nonlocal_entropy": 7.7404806612448525,
+      "layer": 19,
+      "q_head": 1,
+      "kv_head": 0,
+      "nonlocal_entropy": 5.0697255035814575,
       "percentile": 25,
       "selection_label": "p25"
     },
     {
-      "layer": 6,
-      "q_head": 4,
-      "kv_head": 1,
-      "nonlocal_entropy": 8.387393690016555,
+      "layer": 31,
+      "q_head": 0,
+      "kv_head": 0,
+      "nonlocal_entropy": 7.695059932393022,
       "percentile": 50,
       "selection_label": "p50_median"
     },
     {
-      "layer": 12,
-      "q_head": 14,
-      "kv_head": 3,
-      "nonlocal_entropy": 8.943048107581326,
+      "layer": 2,
+      "q_head": 5,
+      "kv_head": 1,
+      "nonlocal_entropy": 8.787098963116858,
       "percentile": 75,
       "selection_label": "p75"
     },
@@ -49,7 +49,7 @@
       "layer": 1,
       "q_head": 2,
       "kv_head": 0,
-      "nonlocal_entropy": 10.387183356331217,
+      "nonlocal_entropy": 10.388404988245107,
       "percentile": 100,
       "selection_label": "p100_highest"
     }
@@ -69,10 +69,6 @@
     "store_rope_vectors": true
   },
   "example_ids": [
-    "math_calc_40",
-    "math_calc_7",
-    "math_calc_1",
-    "math_calc_47",
-    "math_calc_17"
+    "math_calc_0"
   ]
 }

@@ -1,0 +1,14 @@
+{
+  "example_id": "kv_retrieval_247",
+  "sequence_length": 124470,
+  "question": "\nKey: \"dddaac6b-96cd-4980-a8ad-fe64fa4ae13b\"\nThe value associated with the specified key is: ",
+  "answer": "['e77cc6d6-eb25-453a-9bd6-c02e5160eecc']",
+  "context_chars": 200011,
+  "heads_extracted": "L26H4,L12H31,L31H10,L31H19,L1H2",
+  "rope_included": true,
+  "raw_included": true,
+  "backend": "cuda"
+}
+
+
+

@@ -1,0 +1,13 @@
+[
+  {
+    "id": "kv_retrieval_247",
+    "task": "kv_retrieval",
+    "question": "\nKey: \"dddaac6b-96cd-4980-a8ad-fe64fa4ae13b\"\nThe value associated with the specified key is: ",
+    "answer": [
+      "e77cc6d6-eb25-453a-9bd6-c02e5160eecc"
+    ],
+    "source": "infinitebench",
+    "context_chars": 200011,
+    "context_preview": "JSON data:\n{\"ebefa01e-8d39-4761-9194-f371bd3518a0\": \"77d494a3-6f13-4fdb-9e50-3018b94e6a34\", \"b102a2e8-0fde-4c36-9cc0-6882c7e328c2\": \"3f496f14-ac39-423f-a023-d3cb1f684c4c\", \"1d63ec17-41c5-4014-ae0e-085"
+  }
+]

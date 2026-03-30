@@ -243,10 +243,23 @@ class Experiment:
             families = self._build_families(algorithms)
             ov_dir = self.out_dir / "overview"
             ov_dir.mkdir(exist_ok=True)
+            task_seq_info = {}
+            for t, det in per_task_detail.items():
+                slens = det.get("seq_lens", [])
+                if len(slens) == 1:
+                    task_seq_info[t] = (
+                        f"{slens[0]:,} tok"
+                    )
+                elif slens:
+                    avg = int(np.mean(slens))
+                    task_seq_info[t] = (
+                        f"avg {avg:,} tok"
+                    )
             plot_overview(
                 per_task_agg, ov_dir,
                 self.config.get("plotting", {}),
                 self.budgets, families,
+                task_seq_info=task_seq_info,
             )
             self._save_json(
                 "overview/cross_task_stats.json",
@@ -326,6 +339,7 @@ class Experiment:
         per_head_results = {}
         rows = []
         example_ids = set()
+        seq_lens = []
 
         for hi, (layer_idx, q_head, kv_head) in (
             enumerate(heads, 1)
@@ -355,6 +369,7 @@ class Experiment:
                     ex["Q"], ex["K"], ex["V"],
                 )
                 seq_len = Q.shape[0]
+                seq_lens.append(seq_len)
                 qpos_list = _last_query_positions(
                     seq_len, self.n_queries,
                 )
@@ -464,11 +479,18 @@ class Experiment:
             )
 
         if len(per_head_aggs) > 1:
+            unique_lens = sorted(set(seq_lens))
+            if len(unique_lens) == 1:
+                seq_desc = f"{unique_lens[0]:,} tok"
+            else:
+                avg = int(np.mean(seq_lens))
+                seq_desc = f"avg {avg:,} tok"
             plot_per_head_comparison(
                 per_head_aggs, task_dir,
                 self.config.get("plotting", {}),
                 self.budgets, families,
                 task_name=task,
+                seq_desc=seq_desc,
             )
 
         # Weighted aggregate across heads
@@ -479,11 +501,18 @@ class Experiment:
         else:
             agg = aggregate_results(all_results)
 
+        unique_lens = sorted(set(seq_lens))
+        if len(unique_lens) == 1:
+            seq_desc = f"{unique_lens[0]:,} tok"
+        else:
+            avg = int(np.mean(seq_lens))
+            seq_desc = f"avg {avg:,} tok"
+
         plot_experiment(
             agg, task_dir,
             self.config.get("plotting", {}),
             self.budgets, families,
-            title=f"{task} ({phase or 'flat'})",
+            title=f"{task} — {seq_desc}",
             n_queries=n_total,
         )
 
@@ -547,6 +576,7 @@ class Experiment:
             "examples": sorted(example_ids),
             "n_queries_per_example": self.n_queries,
             "total_queries": n_total,
+            "seq_lens": sorted(set(seq_lens)),
         }
         return rows, agg, task_detail
 

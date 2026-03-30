@@ -103,9 +103,15 @@ def load_all_stats(stats_dir: Path) -> tuple:
             data = json.load(f)
         meta = data.pop("metadata", None)
         if meta:
+            seq_len = meta.get("sequence_length", 0)
+            if not seq_len:
+                slens = meta.get("sequence_lengths", [])
+                seq_len = slens[0] if slens else 0
             example_meta[p.stem] = (
-                meta.get("example_id", ""),
-                meta.get("sequence_length", 0),
+                meta.get("example_id",
+                          meta.get("scout_examples",
+                                   [""])[0]),
+                seq_len,
             )
         stats[p.stem] = _normalize_metric_names(data)
     return stats, example_meta
@@ -246,11 +252,11 @@ def _task_boxplot(
         if t in em:
             ex_id, n_tok = em[t]
             xlabels.append(
-                f"{t}\n{ex_id}  ({n_tok:,} tok)"
+                f"{t}\n{ex_id}\n({n_tok:,} tok)"
             )
         else:
             xlabels.append(t)
-    ax.set_xticklabels(xlabels, fontsize=9)
+    ax.set_xticklabels(xlabels, fontsize=8)
     ax.set_ylabel(ylabel)
 
     if n_heads_label is not None:

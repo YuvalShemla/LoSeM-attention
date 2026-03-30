@@ -1,0 +1,73 @@
+{
+  "task": "single_doc_qa",
+  "source": "longbench_v2",
+  "model": "meta-llama/Meta-Llama-3.1-8B",
+  "extraction_date": "2026-03-29T21:48:51.230742",
+  "layers_extracted": [
+    1,
+    6,
+    12,
+    31
+  ],
+  "n_examples": 1,
+  "backend": "cuda",
+  "selected_heads": [
+    {
+      "layer": 1,
+      "q_head": 18,
+      "kv_head": 4,
+      "nonlocal_entropy": 0.7684131735927358,
+      "percentile": 0,
+      "selection_label": "p0_lowest"
+    },
+    {
+      "layer": 12,
+      "q_head": 28,
+      "kv_head": 7,
+      "nonlocal_entropy": 3.2776658932629497,
+      "percentile": 25,
+      "selection_label": "p25"
+    },
+    {
+      "layer": 12,
+      "q_head": 27,
+      "kv_head": 6,
+      "nonlocal_entropy": 3.8223826645128227,
+      "percentile": 50,
+      "selection_label": "p50_median"
+    },
+    {
+      "layer": 31,
+      "q_head": 28,
+      "kv_head": 7,
+      "nonlocal_entropy": 6.55034444879261,
+      "percentile": 75,
+      "selection_label": "p75"
+    },
+    {
+      "layer": 6,
+      "q_head": 24,
+      "kv_head": 6,
+      "nonlocal_entropy": 9.379974991058528,
+      "percentile": 100,
+      "selection_label": "p100_highest"
+    }
+  ],
+  "head_statistics_params": {
+    "n_queries": 10,
+    "n_sink_tokens": 1,
+    "local_window": 1024,
+    "top_pct_for_mass": [
+      1,
+      5
+    ]
+  },
+  "extraction_config": {
+    "max_length": 125000,
+    "store_raw_vectors": true,
+    "store_rope_vectors": true
+  },
+  "example_ids": [
+    "single_document_qa_1"
+  ]
+}

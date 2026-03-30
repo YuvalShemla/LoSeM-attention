@@ -1,0 +1,13 @@
+[
+  {
+    "id": "code_run_370",
+    "task": "code_run",
+    "question": "Please give me the exact number of the return value of func_2270(7). Your response should end with the sentence 'The return value is:'.",
+    "answer": [
+      12
+    ],
+    "source": "infinitebench",
+    "context_chars": 202098,
+    "context_preview": "\nHere is the content of functions_module.py:\n\ndef func_1(x):\n    return func_7623(x) + 16\n\ndef func_2(x):\n    return x + 1\n\ndef func_4(x):\n    return func_8732(x) + 10\n\ndef func_5(x):\n    return func_"
+  }
+]

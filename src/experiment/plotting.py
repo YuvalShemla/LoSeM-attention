@@ -328,6 +328,7 @@ def plot_overview(
     plot_cfg: Dict,
     budgets: List[int],
     algorithm_families: List[Dict],
+    task_seq_info: Dict[str, str] = None,
 ):
     """
     Cross-task summary plots.
@@ -378,7 +379,10 @@ def plot_overview(
                     top_k_sweep=fam["top_k_sweep"],
                     show_bands=show_bands,
                 )
-            ax.set_title(task, fontsize=11)
+            ttl = task
+            if task_seq_info and task in task_seq_info:
+                ttl += f"\n{task_seq_info[task]}"
+            ax.set_title(ttl, fontsize=11)
             if log_scale:
                 ax.set_xscale("log")
                 ax.set_yscale("log")
@@ -470,6 +474,7 @@ def plot_per_head_comparison(
     budgets: List[int],
     algorithm_families: List[Dict],
     task_name: str = "",
+    seq_desc: str = "",
 ):
     """
     Per-head subplot comparison.
@@ -574,6 +579,8 @@ def plot_per_head_comparison(
         suptitle = "Per-Head Comparison"
         if task_name:
             suptitle = f"{task_name} — {suptitle}"
+        if seq_desc:
+            suptitle += f" — {seq_desc}"
         suptitle += f" ({scale})"
         fig.suptitle(
             suptitle, fontsize=14,

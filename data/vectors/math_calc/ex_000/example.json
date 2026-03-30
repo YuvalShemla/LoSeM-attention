@@ -1,10 +1,10 @@
 {
-  "example_id": "math_calc_40",
+  "example_id": "math_calc_0",
   "sequence_length": 45018,
   "question": "What's the intermediate results of the given numerical expression?",
-  "answer": "[98, 98, 99, 99, 39, 51, 77, 59, 18, 1, 0, 15, 10, 6, 45, 4, 1, 53, 56, 28, 27, 59, 61, 69, 89, 15, 22, 4, 26, 15, 4, 2, 48, 37, 27, 62, 3, 11, 4, 3, 3, 92, 97, 97, 36, 49, 26, 27, 31, 72, 1, 10, 7, 8",
-  "context_chars": 69188,
-  "heads_extracted": "L26H12,L31H24,L6H4,L12H14,L1H2",
+  "answer": "[79, 59, 73, 78, 43, 21, 18, 1, 0, 0, 93, 97, 58, 23, 24, 1, 25, 4, 20, 59, 81, 80, 74, 97, 98, 65, 85, 41, 8, 8, 6, 1, 39, 30, 77, 91, 91, 95, 96, 96, 12, 42, 31, 31, 17, 60, 73, 71, 10, 23, 31, 73, ",
+  "context_chars": 69101,
+  "heads_extracted": "L18H12,L19H1,L31H0,L2H5,L1H2",
   "rope_included": true,
   "raw_included": true,
   "backend": "cuda"

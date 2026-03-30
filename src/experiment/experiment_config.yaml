@@ -33,7 +33,7 @@ tasks:
   - math_calc
   - code_run
   - longbook_sum_eng
-  - passkey
+  - kv_retrieval
   - multi_doc_qa
   - single_doc_qa
 
