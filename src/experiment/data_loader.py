@@ -16,6 +16,7 @@ def load_pt_example(
     layer: int,
     head: Optional[int] = None,
     kv_head: Optional[int] = None,
+    use_rope: bool = True,
 ) -> Dict:
     """
     Load one example's single layer from .pt file.
@@ -46,14 +47,17 @@ def load_pt_example(
     )
 
     data = {}
+    q_prefix = "Q_rope" if use_rope else "Q_raw"
+    k_prefix = "K_rope" if use_rope else "K_raw"
+
     if head is not None:
-        q_key = f"Q_rope_head{head}"
+        q_key = f"{q_prefix}_head{head}"
         if q_key in tensors:
             data["Q"] = (
                 tensors[q_key].detach().float().numpy()
             )
     if kv_head is not None:
-        k_key = f"K_rope_kvhead{kv_head}"
+        k_key = f"{k_prefix}_kvhead{kv_head}"
         v_key = f"V_kvhead{kv_head}"
         if k_key in tensors:
             data["K"] = (
@@ -121,6 +125,7 @@ def load_examples(
     kv_head: int,
     phase: Optional[str] = None,
     max_examples: Optional[int] = None,
+    use_rope: bool = True,
 ) -> Iterator[Dict]:
     """
     Iterate examples for a task/layer/head combo.
@@ -139,6 +144,7 @@ def load_examples(
         data = load_pt_example(
             ex_dir, layer=layer,
             head=head, kv_head=kv_head,
+            use_rope=use_rope,
         )
         if "Q" not in data or "K" not in data:
             continue

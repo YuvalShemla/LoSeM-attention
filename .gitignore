@@ -49,3 +49,9 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Results (generated exploration plots)
+results/
+
+# Claude dumps
+claude_dumps/

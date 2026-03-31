@@ -24,7 +24,7 @@ tasks:
   - math_calc
   - code_run
   - longbook_sum_eng
-  - passkey
+  - kv_retrieval
   - multi_doc_qa
   - single_doc_qa
 
@@ -35,12 +35,15 @@ tasks:
 exploration:
   seed: 42
 
+  # Use post-RoPE vectors (true) or raw pre-RoPE (false).
+  use_rope: true
+
   # How many examples to load per task.
   n_examples: 1
 
   # How many query positions to sample per example.
   # Sampled from the last N token positions.
-  n_queries: 200
+  n_queries: 100
 
   # Which heads to analyze.
   #
@@ -66,40 +69,54 @@ exploration:
     size: 1024
 
 # ══════════════════════════════════════════════════════
-# Plots
+# Per-Analysis Settings
 # ══════════════════════════════════════════════════════
-#
-# Which analyses to run. Each name maps to a
-# (compute_fn, plot_fn) pair in the PLOT_REGISTRY.
-# Comment out plots you don't need.
-
-plots:
-  - attention_concentration
-  - entropy_distribution
-  - kv_norm_correlation
-  - topk_vs_sampling_bias
-
-# ── Per-Plot Settings ──
 
 # attention_concentration: How much mass is in the top-K keys?
 concentration:
   top_k_values: [10, 50, 100, 200, 500]
 
-# entropy_distribution: uses attention_sink and local_window
-# from exploration section above (no extra settings).
-
 # kv_norm_correlation: correlation between ||K|| and ||V||
 # for the top-scoring keys.
 kv_norms:
-  top_pct: 10.0           # percentage of keys considered "top"
+  top_pct: 10.0
 
-# topk_vs_sampling_bias: compare TopK, Uniform, Oracle
-# at various budget fractions.
+# approximation_methods: compare TopK, Uniform, Oracle
+# at various absolute budget sizes (number of keys).
 bias_comparison:
-  budget_fractions:
-    - 0.01
-    - 0.03
-    - 0.05
-    - 0.1
-    - 0.2
-    - 0.5
+  budgets:
+    - 16
+    - 32
+    - 64
+    - 128
+    - 512
+    - 1024
+    - 2048
+    - 4096
+    - 8192
+    - 16384
+
+# ══════════════════════════════════════════════════════
+# Pairwise Similarity Settings
+# ══════════════════════════════════════════════════════
+
+pairwise:
+  n_distance_bins: 15           # bins for "vs distance" plots (percentile-based)
+  n_comparison_positions: 20000 # max comparison targets per anchor (subsampled from full context)
+  ema_span: 200                 # EMA span for smoothing curve in vs-distance scatter
+
+# ══════════════════════════════════════════════════════
+# Embedding Projection Settings
+# ══════════════════════════════════════════════════════
+
+embedding:
+  n_fit: 50000                  # vectors for fitting projections (25K Q + 25K K)
+  n_plot: 15000                 # vectors to display in scatter plots
+  n_metric_pairs: 5000          # pairs sampled for cluster separation metrics
+  tsne_perplexity: 100.0        # higher perplexity for better global structure at 30K scale
+  tsne_max_iter: 1500           # safer convergence
+  tsne_init: "pca"              # PCA init for stable, reproducible embeddings
+  tsne_learning_rate: "auto"    # auto-scaled learning rate
+  umap_n_neighbors: 150         # emphasize global structure
+  umap_min_dist: 0.3            # spread clusters for global view
+  umap_metric: "cosine"         # directional metric matching Q-K geometry

@@ -2,18 +2,12 @@
 """
 CLI for generating exploration dashboards.
 
-Loads .pt data, runs configured analysis plots,
-saves to results/exploration_{date}/.
-
-Supports two head modes:
-  selected_heads — iterate all selected heads per task
-                   (from metadata.json)
-  custom         — single hardcoded head from config
+Produces two dashboards per head (global + pairwise),
+then aggregated views across heads and tasks.
 
 Usage:
   python -m src.exploration.run_exploration \
-    --tasks math_calc code_run \
-    --plots attention_concentration entropy
+    --tasks math_calc code_run
 
   python -m src.exploration.run_exploration --all
 """
@@ -26,35 +20,21 @@ from pathlib import Path
 from ..experiment.data_loader import (
     load_examples, load_task_metadata,
 )
-from .attention_concentration import (
-    compute_concentration_data, plot_concentration,
+from .dashboard_global import (
+    compute_global_data, create_global_dashboard,
 )
-from .entropy_distribution import (
-    compute_entropy_data, plot_entropy,
+from .dashboard_pairwise import (
+    compute_pairwise_dashboard_data,
+    create_pairwise_dashboard,
 )
-from .kv_norm_correlation import (
-    compute_kv_norm_data, plot_kv_norms,
+from .dashboard_rope_comparison import (
+    _compute_variant as compute_rope_variant,
+    create_rope_comparison_dashboard,
 )
-from .topk_vs_sampling_bias import (
-    compute_bias_data, plot_bias_comparison,
+from .aggregation import (
+    aggregate_global_data,
+    aggregate_pairwise_data,
 )
-
-
-PLOT_REGISTRY = {
-    "attention_concentration": (
-        compute_concentration_data,
-        plot_concentration,
-    ),
-    "entropy_distribution": (
-        compute_entropy_data, plot_entropy,
-    ),
-    "kv_norm_correlation": (
-        compute_kv_norm_data, plot_kv_norms,
-    ),
-    "topk_vs_sampling_bias": (
-        compute_bias_data, plot_bias_comparison,
-    ),
-}
 
 
 def _last_query_positions(
@@ -68,7 +48,9 @@ def _last_query_positions(
 def _resolve_heads(config, vectors_dir, task):
     """Resolve which heads to analyze for a task.
 
-    Returns list of (layer, q_head, kv_head) tuples.
+    Returns list of dicts with keys:
+        layer, q_head, kv_head, selection_label,
+        nonlocal_entropy.
     """
     ecfg = config.get("exploration", {})
     mode = ecfg.get("head_mode", "custom")
@@ -81,104 +63,109 @@ def _resolve_heads(config, vectors_dir, task):
         if not heads:
             print(f"    No selected_heads in metadata "
                   f"for {task}, falling back to custom")
-            return [(
-                ecfg.get("layer", 17),
-                ecfg.get("q_head", 0),
-                ecfg.get("kv_head", 0),
-            )]
+            return [{
+                "layer": ecfg.get("layer", 17),
+                "q_head": ecfg.get("q_head", 0),
+                "kv_head": ecfg.get("kv_head", 0),
+                "selection_label": None,
+                "nonlocal_entropy": None,
+            }]
         return [
-            (h["layer"], h["q_head"], h["kv_head"])
+            {
+                "layer": h["layer"],
+                "q_head": h["q_head"],
+                "kv_head": h["kv_head"],
+                "selection_label": h.get(
+                    "selection_label",
+                ),
+                "nonlocal_entropy": h.get(
+                    "nonlocal_entropy",
+                ),
+            }
             for h in heads
         ]
 
     # custom mode
-    return [(
-        ecfg.get("layer", 17),
-        ecfg.get("q_head", 0),
-        ecfg.get("kv_head", 0),
-    )]
+    return [{
+        "layer": ecfg.get("layer", 17),
+        "q_head": ecfg.get("q_head", 0),
+        "kv_head": ecfg.get("kv_head", 0),
+        "selection_label": None,
+        "nonlocal_entropy": None,
+    }]
 
 
-def _run_plots_for_head(
-    Q, K, V, head_dim, qpos,
-    label, out_dir, plots, config,
+def _run_aggregation(
+    all_global: list,
+    all_pairwise: list,
+    task_dir: Path,
+    title_prefix: str,
+    ema_span: int = 200,
 ):
-    """Run all requested plots for a single head."""
-    ecfg = config.get("exploration", {})
-    n_sink = ecfg.get(
-        "attention_sink", {}
-    ).get("n_sink_tokens", 1)
-    local_window = ecfg.get(
-        "local_window", {}
-    ).get("size", 1024)
-    seed = ecfg.get("seed", 42)
+    """Run aggregation for a set of head data."""
+    if len(all_global) < 2:
+        return
 
-    conc_cfg = config.get("concentration", {})
-    top_k_values = conc_cfg.get(
-        "top_k_values", [10, 50, 100, 200, 500]
-    )
-    kv_cfg = config.get("kv_norms", {})
-    top_pct = kv_cfg.get("top_pct", 10.0)
-    bias_cfg = config.get("bias_comparison", {})
-    budget_fractions = bias_cfg.get(
-        "budget_fractions",
-        [0.01, 0.03, 0.05, 0.1, 0.2, 0.5],
-    )
+    methods = ["mean", "median", "variance"]
+    for method in methods:
+        agg_dir = task_dir / f"aggregated_{method}"
+        agg_dir.mkdir(parents=True, exist_ok=True)
 
-    for pname in plots:
-        if pname not in PLOT_REGISTRY:
-            print(f"      Unknown plot: {pname}")
-            continue
-        print(f"      {pname}...")
-        out_path = out_dir / f"{pname}.png"
+        label = f"{title_prefix} — {method}"
 
-        if pname == "attention_concentration":
-            data = compute_concentration_data(
-                Q, K, head_dim, qpos,
-                top_k_values=top_k_values,
-            )
-            plot_concentration(
-                data, out_path, title=label,
-            )
-        elif pname == "entropy_distribution":
-            data = compute_entropy_data(
-                Q, K, head_dim, qpos,
-                n_sink, local_window,
-            )
-            plot_entropy(
-                data, out_path, title=label,
-            )
-        elif pname == "kv_norm_correlation":
-            data = compute_kv_norm_data(
-                Q, K, V, head_dim, qpos,
-                top_pct=top_pct,
-            )
-            plot_kv_norms(
-                data, out_path, title=label,
-            )
-        elif pname == "topk_vs_sampling_bias":
-            data = compute_bias_data(
-                Q, K, V, head_dim, qpos,
-                budget_fractions=budget_fractions,
-                seed=seed,
-            )
-            plot_bias_comparison(
-                data, out_path, title=label,
-            )
+        agg_g = aggregate_global_data(
+            all_global, method,
+        )
+        create_global_dashboard(
+            agg_g, label,
+            agg_dir / "global_dashboard.png",
+        )
+
+        agg_p = aggregate_pairwise_data(
+            all_pairwise, method,
+        )
+        create_pairwise_dashboard(
+            agg_p, label,
+            agg_dir / "pairwise_dashboard.png",
+            ema_span=ema_span,
+        )
+        print(f"      {method}: {agg_dir}")
+
+    # Percentiles (p25, p75, p90)
+    pct_dir = task_dir / "aggregated_percentiles"
+    pct_dir.mkdir(parents=True, exist_ok=True)
+    for pct in ["p25", "p75", "p90"]:
+        agg_g = aggregate_global_data(all_global, pct)
+        create_global_dashboard(
+            agg_g,
+            f"{title_prefix} — {pct}",
+            pct_dir / f"global_dashboard_{pct}.png",
+        )
+        agg_p = aggregate_pairwise_data(all_pairwise, pct)
+        create_pairwise_dashboard(
+            agg_p,
+            f"{title_prefix} — {pct}",
+            pct_dir / f"pairwise_dashboard_{pct}.png",
+            ema_span=ema_span,
+        )
+    print(f"      percentiles: {pct_dir}")
 
 
 def run_exploration(config_path: str,
                     tasks: list = None,
-                    plots: list = None,
                     vectors_dir: str = None):
-    """Run exploration analysis on .pt data."""
+    """Run exploration dashboards on .pt data."""
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
     ecfg = config.get("exploration", {})
-    n_queries = ecfg.get("n_queries", 200)
+    n_queries = ecfg.get("n_queries", 50)
     n_examples = ecfg.get("n_examples", 1)
     head_dim = config["model"]["head_dim"]
+    use_rope = ecfg.get("use_rope", True)
+    ema_span = config.get("pairwise", {}).get(
+        "ema_span", 200,
+    )
 
     data_cfg = config.get("data", {})
     vdir = vectors_dir or data_cfg.get(
@@ -190,14 +177,14 @@ def run_exploration(config_path: str,
 
     if tasks is None:
         tasks = config.get("tasks", [])
-    if plots is None:
-        plots = config.get(
-            "plots", list(PLOT_REGISTRY.keys())
-        )
 
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
     out_base = results_dir / f"exploration_{ts}"
     out_base.mkdir(parents=True, exist_ok=True)
+
+    # Collect across ALL tasks for global aggregation
+    all_tasks_global = []
+    all_tasks_pairwise = []
 
     for task in tasks:
         print(f"\n  Task: {task}")
@@ -206,24 +193,30 @@ def run_exploration(config_path: str,
         heads = _resolve_heads(config, vdir, task)
         print(f"    Heads: {len(heads)} — "
               + ", ".join(
-                  f"L{l}H{q}" for l, q, _ in heads
+                  f"L{h['layer']}H{h['q_head']}"
+                  for h in heads
               ))
 
-        for layer, q_head, kv_head in heads:
+        task_global = []
+        task_pairwise = []
+
+        for head_info in heads:
+            layer = head_info["layer"]
+            q_head = head_info["q_head"]
+            kv_head = head_info["kv_head"]
+            sel_label = head_info.get("selection_label")
+            nl_entropy = head_info.get("nonlocal_entropy")
             head_label = f"L{layer}H{q_head}"
             print(f"    {head_label}:")
 
-            # Per-head subdirectory when multiple heads
-            if len(heads) > 1:
-                head_dir = task_dir / head_label
-            else:
-                head_dir = task_dir
+            head_dir = task_dir / head_label
             head_dir.mkdir(parents=True, exist_ok=True)
 
             examples = list(load_examples(
                 Path(vdir), task, layer,
                 head=q_head, kv_head=kv_head,
                 max_examples=n_examples,
+                use_rope=use_rope,
             ))
             if not examples:
                 print(f"      No data for {head_label}"
@@ -233,37 +226,136 @@ def run_exploration(config_path: str,
             ex = examples[0]
             Q, K, V = ex["Q"], ex["K"], ex["V"]
             seq_len = Q.shape[0]
-            qpos = _last_query_positions(
+            last_qpos = _last_query_positions(
                 seq_len, n_queries,
             )
-            print(f"      {seq_len} tokens, "
-                  f"{len(qpos)} queries")
+            all_qpos = list(range(seq_len))
+            print(f"      {seq_len:,} tokens, "
+                  f"{len(last_qpos)} last queries, "
+                  f"{len(all_qpos)} all queries")
 
-            label = f"{task} — {head_label}"
-            _run_plots_for_head(
-                Q, K, V, head_dim, qpos,
-                label, head_dir, plots, config,
+            # Build title with head metadata
+            meta_parts = []
+            if sel_label:
+                meta_parts.append(sel_label)
+            if nl_entropy is not None:
+                meta_parts.append(
+                    f"ent={nl_entropy:.2f}"
+                )
+            meta_str = (
+                f" ({', '.join(meta_parts)})"
+                if meta_parts else ""
             )
+            info = (
+                f"{task} — {head_label}{meta_str}"
+                f" ({seq_len:,} tok)"
+            )
+
+            # Global dashboard
+            print(f"      Computing global analyses...")
+            global_data = compute_global_data(
+                Q, K, V, head_dim, last_qpos, config,
+                all_query_positions=all_qpos,
+            )
+            print(f"      Creating global dashboard...")
+            create_global_dashboard(
+                global_data, info,
+                head_dir / "global_dashboard.png",
+            )
+
+            # Pairwise dashboard
+            print(f"      Computing pairwise analyses...")
+            pairwise_data = compute_pairwise_dashboard_data(
+                Q, K, head_dim, last_qpos, config,
+            )
+            print(f"      Creating pairwise dashboard...")
+            create_pairwise_dashboard(
+                pairwise_data, info,
+                head_dir / "pairwise_dashboard.png",
+                ema_span=ema_span,
+            )
+
+            task_global.append(global_data)
+            task_pairwise.append(pairwise_data)
+
+            # RoPE comparison dashboard
+            # Reuse already-computed RoPE embedding + pairwise
+            print(f"      Computing RoPE comparison "
+                  f"(raw only)...")
+            raw_examples = list(load_examples(
+                Path(vdir), task, layer,
+                head=q_head, kv_head=kv_head,
+                max_examples=n_examples,
+                use_rope=False,
+            ))
+            if raw_examples:
+                raw_ex = raw_examples[0]
+                Q_raw = raw_ex["Q"]
+                K_raw = raw_ex["K"]
+                V_raw = raw_ex["V"]
+
+                rope_variant = {
+                    "embedding": global_data.get("embedding"),
+                    "pairwise": {
+                        "qk": pairwise_data["qk"],
+                        "kk": pairwise_data["kk"],
+                    },
+                    "concentration": global_data.get(
+                        "concentration",
+                    ),
+                    "entropy": global_data.get("entropy"),
+                    "bias": global_data.get("bias"),
+                }
+                raw_variant = compute_rope_variant(
+                    Q_raw, K_raw, head_dim, last_qpos,
+                    config,
+                    V=V_raw,
+                    all_query_positions=all_qpos,
+                )
+                create_rope_comparison_dashboard(
+                    rope_variant, raw_variant, info,
+                    head_dir / "rope_comparison.png",
+                )
+            else:
+                print(f"      No raw vectors, skipping "
+                      f"RoPE comparison")
+
+            print(f"      Saved: {head_dir}")
+
+        # Per-task aggregation
+        if len(task_global) >= 2:
+            print(f"\n    Aggregating {task}...")
+            _run_aggregation(
+                task_global, task_pairwise,
+                task_dir, task, ema_span,
+            )
+
+        all_tasks_global.extend(task_global)
+        all_tasks_pairwise.extend(task_pairwise)
+
+    # Global (all-tasks) aggregation
+    if len(all_tasks_global) >= 2 and len(tasks) > 1:
+        print(f"\n  All-tasks aggregation...")
+        _run_aggregation(
+            all_tasks_global, all_tasks_pairwise,
+            out_base / "all_tasks", "all_tasks",
+            ema_span,
+        )
 
     print(f"\n  Exploration saved: {out_base}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate exploration plots.",
+        description="Generate exploration dashboards.",
     )
     parser.add_argument(
         "--tasks", nargs="+", default=None,
         help="Tasks to analyze (default: from config).",
     )
     parser.add_argument(
-        "--plots", nargs="+", default=None,
-        choices=list(PLOT_REGISTRY.keys()),
-        help="Which plots to generate.",
-    )
-    parser.add_argument(
         "--all", action="store_true",
-        help="Run all plots on all tasks.",
+        help="Run all tasks from config.",
     )
     parser.add_argument(
         "--vectors-dir", default=None,
@@ -278,15 +370,12 @@ def main():
     args = parser.parse_args()
 
     tasks = args.tasks
-    plots = args.plots
     if args.all:
         tasks = None
-        plots = None
 
     run_exploration(
         args.config,
         tasks=tasks,
-        plots=plots,
         vectors_dir=args.vectors_dir,
     )
 
