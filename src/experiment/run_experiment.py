@@ -122,9 +122,10 @@ class Experiment:
         self.n_examples = exp.get("n_examples", 10)
         self.budgets = exp["budget_sweep"]["absolute"]
         self.head_dim = self.config["model"]["head_dim"]
-        self.n_sink = exp["attention_sink"][
-            "n_sink_tokens"
-        ]
+        self.n_sink = (
+            1 if exp.get("exclude_sink_token", True)
+            else 0
+        )
         self.local_window = exp["local_window"]["size"]
 
         self.compute_statistics = exp.get(

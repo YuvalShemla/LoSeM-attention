@@ -15,7 +15,7 @@
     "head_dim": 128,
     "head_statistics_params": {
       "n_queries": 10,
-      "n_sink_tokens": 1,
+      "exclude_sink_token": true,
       "local_window": 1024,
       "top_pct_for_mass": [
         1,

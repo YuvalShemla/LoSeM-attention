@@ -103,12 +103,12 @@ head_selection:
 ```yaml
 head_statistics:
   n_queries: 10            # average stats over last N query positions
-  n_sink_tokens: 1         # positions excluded as "sink"
+  exclude_sink_token: true  # exclude position 0 (attention sink)
   local_window: 1024       # positions excluded as "local"
   top_pct_for_mass: [1, 5] # compute top-1% and top-5% mass
 ```
 
-These control how the per-head statistics are computed during the scout pass. The `n_sink_tokens` and `local_window` define which tokens are excluded from the effective entropy computation.
+These control how the per-head statistics are computed during the scout pass. `exclude_sink_token` and `local_window` define which tokens are excluded from the effective entropy computation.
 
 ### Output paths
 

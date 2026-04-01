@@ -107,9 +107,7 @@ def _write_test_config(tmpdir, vdir):
                 {"layer": 17, "q_head": 0,
                  "kv_head": 0},
             ],
-            "attention_sink": {
-                "n_sink_tokens": 1,
-            },
+            "exclude_sink_token": True,
             "local_window": {"size": 10},
             "budget_sweep": {
                 "absolute": [32],

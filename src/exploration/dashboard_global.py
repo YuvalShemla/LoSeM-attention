@@ -56,9 +56,10 @@ def compute_global_data(
         all_query_positions = query_positions
 
     ecfg = config.get("exploration", {})
-    n_sink = ecfg.get(
-        "attention_sink", {},
-    ).get("n_sink_tokens", 1)
+    n_sink = (
+        1 if ecfg.get("exclude_sink_token", True)
+        else 0
+    )
     local_window = ecfg.get(
         "local_window", {},
     ).get("size", 1024)

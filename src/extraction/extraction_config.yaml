@@ -100,7 +100,7 @@ head_selection:
 head_statistics:
   top_pct_for_mass: [1, 5]    # compute mass in top 1% and top 5%
   n_queries: 10               # last N query positions per head
-  n_sink_tokens: 0            # tokens excluded as "sink" (position 0)
+  exclude_sink_token: true     # exclude position 0 (attention sink)
   local_window: 0          # tokens excluded as "local" (last N)
   compute_all_examples: true  # compute stats for all N examples (adds N forward passes)
 

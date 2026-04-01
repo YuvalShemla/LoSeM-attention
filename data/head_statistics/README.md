@@ -45,7 +45,7 @@ Each JSON file (both scout and per-example) has the same structure:
     "n_kv_heads": 8,
     "head_dim": 128,
     "head_statistics_params": {
-      "n_queries": 10, "n_sink_tokens": 1, "local_window": 1024
+      "n_queries": 10, "exclude_sink_token": true, "local_window": 1024
     }
   },
   "layer_0": {

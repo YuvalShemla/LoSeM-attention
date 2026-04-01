@@ -250,7 +250,7 @@ def _head_stats_from_data(layer_data, config):
     hdim = config["model"]["head_dim"]
     hs_cfg = config.get("head_statistics", {})
     n_queries = hs_cfg.get("n_queries", 10)
-    n_sink = hs_cfg.get("n_sink_tokens", 1)
+    n_sink = 1 if hs_cfg.get("exclude_sink_token", True) else 0
     local_w = hs_cfg.get("local_window", 1024)
     top_pcts = hs_cfg.get("top_pct_for_mass", [1, 5])
 
@@ -340,8 +340,8 @@ def run(config: dict, data_root: Path):
     hs_cfg = config.get("head_statistics", {})
     hs_params = {
         "n_queries": hs_cfg.get("n_queries", 10),
-        "n_sink_tokens": hs_cfg.get(
-            "n_sink_tokens", 1,
+        "exclude_sink_token": hs_cfg.get(
+            "exclude_sink_token", True,
         ),
         "local_window": hs_cfg.get(
             "local_window", 1024,

@@ -61,9 +61,10 @@ def _compute_variant(
     pw_cfg = config.get("pairwise", {})
     n_bins = pw_cfg.get("n_distance_bins", 15)
     max_targets = pw_cfg.get("n_comparison_positions", 20000)
-    n_sink = ecfg.get(
-        "attention_sink", {},
-    ).get("n_sink_tokens", 1)
+    n_sink = (
+        1 if ecfg.get("exclude_sink_token", True)
+        else 0
+    )
     local_window = ecfg.get(
         "local_window", {},
     ).get("size", 1024)
