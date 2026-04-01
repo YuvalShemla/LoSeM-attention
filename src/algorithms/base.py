@@ -84,7 +84,7 @@ class AttentionAlgorithm(ABC):
 
     @property
     def kind(self) -> str:
-        """'baseline' or 'algorithm'."""
+        """'idealized' or 'algorithm'."""
         return "algorithm"
 
     @property

@@ -164,10 +164,10 @@ class Experiment:
         t0 = time.time()
         rng = np.random.default_rng(self.seed)
 
-        baselines = []
+        idealized = []
         for spec in METHOD_REGISTRY.values():
-            if spec.kind == "baseline":
-                baselines.extend(
+            if spec.kind == "idealized":
+                idealized.extend(
                     spec.cls.expand_from_config({})
                 )
         algo_cfgs = self.config.get(
@@ -176,7 +176,7 @@ class Experiment:
         algorithms = _resolve_methods(
             algo_names, algo_cfgs,
         )
-        methods = baselines + algorithms
+        methods = idealized + algorithms
 
         # --- Log experiment plan ---
         phase, _, _ = self._resolve_heads(
@@ -411,7 +411,7 @@ class Experiment:
                         if key == "_query_stats":
                             continue
                         mname = key.rsplit("-", 1)[0]
-                        mk = "baseline"
+                        mk = "idealized"
                         for m in methods:
                             if m.name == mname:
                                 mk = m.kind
@@ -452,7 +452,7 @@ class Experiment:
             l, h, k = heads[idx]
             hm = head_meta[idx] if head_meta else {}
             label = hm.get("selection_label", "")
-            ent = hm.get("nonlocal_entropy")
+            ent = hm.get("effective_entropy")
             tag = f"L{l}H{h}"
             if label:
                 tag += f"_{label}"
@@ -463,7 +463,7 @@ class Experiment:
                 "kv_head": k,
                 "n_queries": len(results),
                 "selection_label": label,
-                "nonlocal_entropy": ent,
+                "effective_entropy": ent,
             }
             self._save_json(
                 f"per_task/{task}/per_head/"
@@ -472,7 +472,7 @@ class Experiment:
                     "layer": l, "q_head": h,
                     "kv_head": k,
                     "selection_label": label,
-                    "nonlocal_entropy": ent,
+                    "effective_entropy": ent,
                     "n_queries": len(results),
                     "aggregated_stats": head_agg,
                 },
@@ -544,17 +544,17 @@ class Experiment:
                 "entropy=%.2f±%.2f, "
                 "top1pct_mass=%.3f±%.3f",
                 qstats.get(
-                    "nonlocal_entropy_mean", 0
+                    "effective_entropy_mean", 0
                 ),
                 qstats.get(
-                    "nonlocal_entropy_std", 0
+                    "effective_entropy_std", 0
                 ),
                 qstats.get(
-                    "nonlocal_top1pct_mass_mean",
+                    "effective_top1pct_mass_mean",
                     0,
                 ),
                 qstats.get(
-                    "nonlocal_top1pct_mass_std",
+                    "effective_top1pct_mass_std",
                     0,
                 ),
             )
@@ -592,7 +592,7 @@ class Experiment:
         phase is None for flat layout, or a string
         for legacy phase-based layout.
         head_meta entries have percentile,
-        nonlocal_entropy, selection_label when
+        effective_entropy, selection_label when
         available.
         """
         mode = self.head_mode
@@ -654,8 +654,8 @@ class Experiment:
             head_meta = [
                 {
                     "percentile": s.get("percentile"),
-                    "nonlocal_entropy": s.get(
-                        "nonlocal_entropy"
+                    "effective_entropy": s.get(
+                        "effective_entropy"
                     ),
                     "selection_label": s.get(
                         "selection_label"

@@ -171,7 +171,7 @@ def test_smoke_run():
         assert "attention_statistics" in ds
         astats = ds["attention_statistics"]
         assert "full_entropy_mean" in astats
-        assert "nonlocal_entropy_mean" in astats
+        assert "effective_entropy_mean" in astats
 
         # Check spec has tasks + date + head_mode
         with open(out / "spec.json") as f:

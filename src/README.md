@@ -7,7 +7,7 @@ src/
 ├── core.py             # Shared math: softmax, attention, entropy, norms, kmeans
 ├── algorithms/         # Attention approximation methods
 │   ├── base.py         # ABC + dataclasses
-│   ├── baselines.py    # OracleTopK, OracleSampling, OracleGrouping
+│   ├── idealized_methods.py  # IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits
 │   ├── meanq_grouping.py
 │   ├── multiq_grouping.py
 │   └── kmeans_clustering.py
@@ -42,7 +42,7 @@ core.py  ←── shared by everything below
 python -m src.experiment.run_experiment
   └── experiment/run_experiment.py
         ├── algorithms/__init__.py (METHOD_REGISTRY)
-        │     ├── baselines.py
+        │     ├── idealized_methods.py
         │     ├── meanq_grouping.py
         │     ├── multiq_grouping.py
         │     └── kmeans_clustering.py

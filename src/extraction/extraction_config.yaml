@@ -72,7 +72,7 @@ extraction:
   storage_format: "pt_bfloat16"
   store_raw_vectors: true   # pre-RoPE Q and K
   store_rope_vectors: true  # post-RoPE Q and K
-  layers: [0, 1,2 , 3, 6, 7, 8, 12, 15, 17, 18, 19, 25, 27, 30, 31]  # 16 layers spanning the network (use "all" only with >40GB VRAM)
+  layers: [0, 1, 2 ,3, 6, 7, 8, 12, 15, 17, 18, 19, 25, 27, 30, 31]  # 16 layers spanning the network (use "all" only with >40GB VRAM)
 
 # ═══════════════════════════════════════════════════
 # Head Selection
@@ -89,7 +89,7 @@ extraction:
 #
 head_selection:
   mode: "auto"
-  metric: "nonlocal_entropy"    # ranking metric for percentile selection
+  metric: "effective_entropy"    # ranking metric for percentile selection
   # Percentile positions (0=min entropy/most concentrated,
   # 100=max/most diffuse)
   percentiles: [0, 25, 50, 75, 100]   # -> 5 heads
@@ -100,8 +100,8 @@ head_selection:
 head_statistics:
   top_pct_for_mass: [1, 5]    # compute mass in top 1% and top 5%
   n_queries: 10               # last N query positions per head
-  n_sink_tokens: 1            # tokens excluded as "sink" (position 0)
-  local_window: 1024          # tokens excluded as "local" (last N)
+  n_sink_tokens: 0            # tokens excluded as "sink" (position 0)
+  local_window: 0          # tokens excluded as "local" (last N)
   compute_all_examples: true  # compute stats for all N examples (adds N forward passes)
 
 # ── Output Paths ──

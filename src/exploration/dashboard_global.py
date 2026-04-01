@@ -201,7 +201,7 @@ def _panel_entropy(ax, data, is_variance=False):
         label="Full", lw=1.2, alpha=0.8,
     )
     ax.plot(
-        pos, data["nonlocal_entropy"],
+        pos, data["effective_entropy"],
         label="Excl. sink+local", lw=1.2, alpha=0.8,
     )
     ref = np.log(np.maximum(np.array(pos), 1))
@@ -213,7 +213,7 @@ def _panel_entropy(ax, data, is_variance=False):
     if is_variance and "_all_heads" in data:
         for key, color in [
             ("full_entropy", "#1f77b4"),
-            ("nonlocal_entropy", "#ff7f0e"),
+            ("effective_entropy", "#ff7f0e"),
         ]:
             for head_vals in data["_all_heads"][key]:
                 ax.plot(
@@ -235,12 +235,12 @@ def _panel_entropy(ax, data, is_variance=False):
 
 
 def _panel_bias(ax, data, is_variance=False):
-    """Approximation methods: TopK, Uniform, Distr., Grouping."""
+    """Approximation methods: TopK, Uniform, IdealSampling."""
     budgets = data["budgets"]
     for method, label, color, marker in [
         ("topk", "TopK", "#d62728", "o"),
         ("uniform", "Uniform Sampling", "#ff7f0e", "^"),
-        ("oracle_sampling", "Distribution Sampling",
+        ("ideal_sampling", "Distribution Sampling",
          "#2ca02c", "s"),
     ]:
         key = f"{method}_value_error"
@@ -263,17 +263,17 @@ def _panel_bias(ax, data, is_variance=False):
                     alpha=0.12, color=color,
                 )
 
-    # Oracle grouping: single point + horizontal line
-    og_err = data.get("oracle_grouping_value_error")
-    og_budget = data.get("oracle_grouping_budget")
-    if og_err is not None and og_budget:
+    # Ideal Equal Splits: single point + horizontal line
+    es_err = data.get("ideal_equal_splits_value_error")
+    es_budget = data.get("ideal_equal_splits_budget")
+    if es_err is not None and es_budget:
         ax.plot(
-            og_budget, og_err, color="#1f77b4",
+            es_budget, es_err, color="#1f77b4",
             marker="D", ms=7, zorder=5,
-            label="Oracle Grouping",
+            label="IdealEqualSplits",
         )
         ax.axhline(
-            og_err, color="#1f77b4", ls="--",
+            es_err, color="#1f77b4", ls="--",
             lw=1, alpha=0.5,
         )
 

@@ -50,7 +50,7 @@ def _resolve_heads(config, vectors_dir, task):
 
     Returns list of dicts with keys:
         layer, q_head, kv_head, selection_label,
-        nonlocal_entropy.
+        effective_entropy.
     """
     ecfg = config.get("exploration", {})
     mode = ecfg.get("head_mode", "custom")
@@ -68,7 +68,7 @@ def _resolve_heads(config, vectors_dir, task):
                 "q_head": ecfg.get("q_head", 0),
                 "kv_head": ecfg.get("kv_head", 0),
                 "selection_label": None,
-                "nonlocal_entropy": None,
+                "effective_entropy": None,
             }]
         return [
             {
@@ -78,8 +78,8 @@ def _resolve_heads(config, vectors_dir, task):
                 "selection_label": h.get(
                     "selection_label",
                 ),
-                "nonlocal_entropy": h.get(
-                    "nonlocal_entropy",
+                "effective_entropy": h.get(
+                    "effective_entropy",
                 ),
             }
             for h in heads
@@ -91,7 +91,7 @@ def _resolve_heads(config, vectors_dir, task):
         "q_head": ecfg.get("q_head", 0),
         "kv_head": ecfg.get("kv_head", 0),
         "selection_label": None,
-        "nonlocal_entropy": None,
+        "effective_entropy": None,
     }]
 
 
@@ -205,7 +205,7 @@ def run_exploration(config_path: str,
             q_head = head_info["q_head"]
             kv_head = head_info["kv_head"]
             sel_label = head_info.get("selection_label")
-            nl_entropy = head_info.get("nonlocal_entropy")
+            nl_entropy = head_info.get("effective_entropy")
             head_label = f"L{layer}H{q_head}"
             print(f"    {head_label}:")
 

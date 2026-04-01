@@ -2,8 +2,8 @@
 Plotting for attention experiments.
 
 Matches the style from experiment 10 (math_calc_bootstrap):
-  - Baselines: dashed lines (OracleTopK red, Oracle green)
-  - Oracle Grouping: blue star (single point)
+  - Idealized: dashed lines (IdealTopK red, Sampling green,
+    Equal Splits blue, Equal Weight Splits purple)
   - Algorithms: TopK (dashed) + Hybrid (solid) families
   - Color families: blue, orange, pink, gold
   - Log and linear scale versions
@@ -88,20 +88,20 @@ def _plot_with_error_band(
     return line
 
 
-def plot_baselines(
+def plot_idealized_methods(
     ax: plt.Axes,
     agg: Dict,
     budgets: List[int],
     plot_cfg: Dict,
 ):
-    """Plot OracleTopK and Oracle baseline curves."""
-    colors = plot_cfg.get("baseline_colors", {})
+    """Plot idealized method curves."""
+    colors = plot_cfg.get("idealized_colors", {})
     show_bands = plot_cfg.get("error_bands", True)
 
-    # OracleTopK — red dashed line
+    # IdealTopK — red dashed line
     x, y, s = [], [], []
     for b in budgets:
-        k = f"OracleTopK-{b}"
+        k = f"IdealTopK-{b}"
         if k in agg:
             x.append(agg[k]["budget_mean"])
             y.append(agg[k]["error_mean"])
@@ -110,17 +110,17 @@ def plot_baselines(
         _plot_with_error_band(
             ax, x, y, s if show_bands else None,
             color=colors.get(
-                "OracleTopK", "#d62728",
+                "IdealTopK", "#d62728",
             ),
             ls="--", marker="o", lw=2.5, ms=7,
             zorder=4,
-            label="OracleTopK (individual keys)",
+            label="IdealTopK (individual keys)",
         )
 
-    # OracleSampling — green dashed line
+    # IdealSampling — green dashed line
     x, y, s = [], [], []
     for b in budgets:
-        k = f"OracleSampling-{b}"
+        k = f"IdealSampling-{b}"
         if k in agg:
             x.append(agg[k]["budget_mean"])
             y.append(agg[k]["error_mean"])
@@ -128,37 +128,48 @@ def plot_baselines(
     if x:
         _plot_with_error_band(
             ax, x, y, s if show_bands else None,
-            color=colors.get("OracleSampling", "#2ca02c"),
+            color=colors.get("IdealSampling", "#2ca02c"),
             ls="--", marker="^", lw=2.5, ms=7,
             zorder=4,
-            label="OracleSampling",
+            label="IdealSampling",
         )
 
-    # Oracle Grouping — blue star (single point)
-    og_color = colors.get(
-        "Oracle Grouping", "#1f77b4"
-    )
-    if "Oracle Grouping" in agg:
-        ax.scatter(
-            [agg["Oracle Grouping"]["budget_mean"]],
-            [agg["Oracle Grouping"]["error_mean"]],
-            marker="*", s=600, color=og_color,
-            zorder=6, edgecolors="black",
-            linewidths=1.0,
-            label="Oracle Grouping",
+    # IdealEqualSplits — blue dashed line
+    x, y, s = [], [], []
+    for b in budgets:
+        k = f"IdealEqualSplits-{b}"
+        if k in agg:
+            x.append(agg[k]["budget_mean"])
+            y.append(agg[k]["error_mean"])
+            s.append(agg[k].get("error_std", 0))
+    if x:
+        _plot_with_error_band(
+            ax, x, y, s if show_bands else None,
+            color=colors.get(
+                "IdealEqualSplits", "#1f77b4",
+            ),
+            ls="--", marker="s", lw=2.5, ms=7,
+            zorder=4,
+            label="IdealEqualSplits",
         )
-    if "Oracle Grouping (no last)" in agg:
-        ax.scatter(
-            [agg["Oracle Grouping (no last)"][
-                "budget_mean"
-            ]],
-            [agg["Oracle Grouping (no last)"][
-                "error_mean"
-            ]],
-            marker="D", s=250, color=og_color,
-            zorder=6, edgecolors="black",
-            linewidths=1.0,
-            label="Oracle Grouping (no last)",
+
+    # IdealEqualWeightSplits — purple dashed line
+    x, y, s = [], [], []
+    for b in budgets:
+        k = f"IdealEqualWeightSplits-{b}"
+        if k in agg:
+            x.append(agg[k]["budget_mean"])
+            y.append(agg[k]["error_mean"])
+            s.append(agg[k].get("error_std", 0))
+    if x:
+        _plot_with_error_band(
+            ax, x, y, s if show_bands else None,
+            color=colors.get(
+                "IdealEqualWeightSplits", "#9467bd",
+            ),
+            ls="--", marker="D", lw=2.5, ms=7,
+            zorder=4,
+            label="IdealEqualWeightSplits",
         )
 
 
@@ -267,7 +278,7 @@ def plot_experiment(
         scale = "log" if log_scale else "linear"
         fig, ax = plt.subplots(1, 1, figsize=figsize)
 
-        plot_baselines(ax, agg, budgets, plot_cfg)
+        plot_idealized_methods(ax, agg, budgets, plot_cfg)
 
         for fam in algorithm_families:
             plot_algorithm_family(
@@ -334,7 +345,7 @@ def plot_overview(
     Cross-task summary plots.
 
     One subplot per task, shared y-axis, showing
-    baselines + algorithms for quick comparison.
+    idealized methods + algorithms for quick comparison.
     """
     setup_style()
     tasks = list(per_task_agg.keys())
@@ -367,7 +378,7 @@ def plot_overview(
             r, c = divmod(i, cols)
             ax = axes[r][c]
             agg = per_task_agg[task]
-            plot_baselines(ax, agg, budgets, plot_cfg)
+            plot_idealized_methods(ax, agg, budgets, plot_cfg)
             for fam in algorithm_families:
                 plot_algorithm_family(
                     ax, agg,
@@ -446,7 +457,7 @@ def _build_info_panel(ax, per_head_aggs, sorted_idxs,
         info = per_head_aggs[idx]
         tag = f"L{info['layer']}H{info['q_head']}"
         lbl = info.get("selection_label", "")
-        ent = info.get("nonlocal_entropy")
+        ent = info.get("effective_entropy")
         nq = info.get("n_queries", 0)
         parts = [tag]
         if lbl:
@@ -480,7 +491,7 @@ def plot_per_head_comparison(
     Per-head subplot comparison.
 
     per_head_aggs: {head_idx: {agg, layer, q_head,
-        selection_label, nonlocal_entropy, ...}}
+        selection_label, effective_entropy, ...}}
     Uses spare subplot cells for a legend + info panel.
     """
     setup_style()
@@ -523,7 +534,7 @@ def plot_per_head_comparison(
             info = per_head_aggs[idx]
             agg = info["agg"]
 
-            plot_baselines(
+            plot_idealized_methods(
                 ax, agg, budgets, plot_cfg,
             )
             for fam in algorithm_families:
@@ -542,7 +553,7 @@ def plot_per_head_comparison(
                 f"L{info['layer']}H{info['q_head']}"
             )
             lbl = info.get("selection_label", "")
-            ent = info.get("nonlocal_entropy")
+            ent = info.get("effective_entropy")
             if lbl:
                 title += f" ({lbl}"
                 if ent is not None:

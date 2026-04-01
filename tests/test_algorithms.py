@@ -64,10 +64,10 @@ def _make_problem(Q, K, V, qpos):
 
 
 def test_all_methods_registered():
-    """At least baselines + some algorithms exist."""
+    """At least idealized methods + some algorithms exist."""
     baselines = [
         k for k, v in METHOD_REGISTRY.items()
-        if v.kind == "baseline"
+        if v.kind == "idealized"
     ]
     algorithms = [
         k for k, v in METHOD_REGISTRY.items()
@@ -96,7 +96,7 @@ def test_method_interface(method_name, synthetic_data):
     rng = np.random.default_rng(SEED)
 
     # Get one instance
-    if spec.kind == "baseline":
+    if spec.kind == "idealized":
         instances = spec.cls.expand_from_config({})
     else:
         # Minimal config for algorithms
@@ -144,7 +144,7 @@ def test_method_interface(method_name, synthetic_data):
 def test_method_has_name(method_name):
     """Each method has a non-empty name."""
     spec = METHOD_REGISTRY[method_name]
-    if spec.kind == "baseline":
+    if spec.kind == "idealized":
         instances = spec.cls.expand_from_config({})
     else:
         cfg = {
@@ -158,12 +158,12 @@ def test_method_has_name(method_name):
         assert isinstance(inst.kind, str)
 
 
-def test_oracle_topk_respects_budget(synthetic_data):
-    """OracleTopK should use at most budget + special."""
+def test_ideal_topk_respects_budget(synthetic_data):
+    """IdealTopK should use at most budget + special."""
     Q, K, V = synthetic_data
     rng = np.random.default_rng(SEED)
-    from src.algorithms.baselines import OracleTopK
-    method = OracleTopK()
+    from src.algorithms.idealized_methods import IdealTopK
+    method = IdealTopK()
     problem = _make_problem(Q, K, V, SEQ_LEN - 1)
     budget = 20
     out = method.run(problem, budget, rng)

@@ -122,7 +122,7 @@ def aggregate_global_data(
     agg_ent = {
         "positions": ref_ent["positions"],
     }
-    for key in ["full_entropy", "nonlocal_entropy"]:
+    for key in ["full_entropy", "effective_entropy"]:
         arrays = [np.array(e[key]) for e in ent_all]
         agg_ent[key] = list(_agg_arrays(arrays, agg_method))
         if is_variance:
@@ -143,7 +143,7 @@ def aggregate_global_data(
     agg_bias = {
         "budgets": ref_bias["budgets"],
     }
-    for prefix in ["topk", "uniform", "oracle_sampling"]:
+    for prefix in ["topk", "uniform", "ideal_sampling"]:
         key = f"{prefix}_value_error"
         arrays = [np.array(b[key]) for b in bias_all]
         agg_bias[key] = list(

@@ -2,8 +2,9 @@
 Approximation methods analysis.
 
 Compares TopK truncation, uniform sampling, distribution
-sampling, and oracle grouping at various absolute budgets.
-Measures value-space error (L2 on aggregated output).
+sampling, ideal equal splits and ideal equal weight
+splits at various absolute budgets. Measures value-space
+error (L2 on aggregated output).
 """
 
 import numpy as np
@@ -13,7 +14,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, List
 
-from ..core import softmax, make_doubling_boundaries
+from ..core import softmax
 from ..experiment.plotting import (
     setup_style, save_figure,
 )
@@ -22,6 +23,77 @@ _DEFAULT_BUDGETS = [
     16, 32, 64, 128, 512,
     1024, 2048, 4096, 8192, 16384,
 ]
+
+
+def _equal_weight_groups(
+    sorted_idx: np.ndarray,
+    sorted_weights: np.ndarray,
+    num_groups: int,
+) -> list:
+    """
+    Split so each group captures ~equal total weight mass.
+    """
+    n = len(sorted_idx)
+    num_groups = min(num_groups, n)
+    if num_groups >= n:
+        return [sorted_idx[i:i + 1] for i in range(n)]
+
+    cumsum = np.cumsum(sorted_weights)
+    total = cumsum[-1]
+    if total < 1e-12:
+        group_size = max(1, n // num_groups)
+        groups = []
+        for i in range(num_groups):
+            start = i * group_size
+            end = (
+                (i + 1) * group_size
+                if i < num_groups - 1
+                else n
+            )
+            if start >= n:
+                break
+            groups.append(sorted_idx[start:end])
+        return groups
+
+    targets = np.linspace(
+        0, total, num_groups + 1,
+    )[1:-1]
+    split_indices = np.searchsorted(cumsum, targets)
+    split_indices = np.unique(
+        np.clip(split_indices, 1, n - 1)
+    )
+
+    groups = []
+    prev = 0
+    for sp in split_indices:
+        groups.append(sorted_idx[prev:sp])
+        prev = sp
+    groups.append(sorted_idx[prev:])
+
+    return groups
+
+
+def _ideal_grouping_error(
+    q, keys, vals, head_dim, true_out, t_norm,
+    groups,
+):
+    """Compute error for a set of groups."""
+    sqrt_d = np.sqrt(head_dim)
+    n_groups = len(groups)
+    group_scores = np.empty(n_groups)
+    group_vals = np.empty((n_groups, head_dim))
+    for gi, g_idx in enumerate(groups):
+        count = len(g_idx)
+        avg_k = np.mean(keys[g_idx], axis=0)
+        avg_v = np.mean(vals[g_idx], axis=0)
+        group_scores[gi] = (
+            q @ avg_k / sqrt_d + np.log(count)
+        )
+        group_vals[gi] = avg_v
+
+    w = softmax(group_scores)
+    out = w @ group_vals
+    return np.linalg.norm(out - true_out) / t_norm
 
 
 def compute_bias_data(
@@ -34,14 +106,15 @@ def compute_bias_data(
     seed: int = 42,
 ) -> Dict:
     """
-    Compare TopK, Uniform, Oracle Sampling, Oracle Grouping.
+    Compare TopK, Uniform, IdealSampling,
+    IdealEqualSplits, IdealEqualWeightSplits.
 
     budgets: absolute number of keys to use at each point.
     Budgets exceeding the context length for a query are
     skipped for that query.
 
     Returns per-budget mean/std of value errors across
-    queries, plus oracle grouping (fixed budget).
+    queries.
     """
     if budgets is None:
         budgets = list(_DEFAULT_BUDGETS)
@@ -51,17 +124,19 @@ def compute_bias_data(
         "budgets": budgets,
         "topk_value_error": [],
         "uniform_value_error": [],
-        "oracle_sampling_value_error": [],
+        "ideal_sampling_value_error": [],
+        "ideal_equal_splits_value_error": [],
+        "ideal_equal_weight_splits_value_error": [],
         "topk_value_std": [],
         "uniform_value_std": [],
-        "oracle_sampling_value_std": [],
+        "ideal_sampling_value_std": [],
+        "ideal_equal_splits_value_std": [],
+        "ideal_equal_weight_splits_value_std": [],
     }
-
-    # Oracle grouping: fixed budget (~log2(N) groups)
-    og_errs = []
 
     for budget in budgets:
         tk_errs, un_errs, or_errs = [], [], []
+        es_errs, ew_errs = [], []
         for qpos in query_positions:
             q = Q[qpos]
             keys = K[:qpos + 1]
@@ -100,7 +175,7 @@ def compute_bias_data(
                 / t_norm
             )
 
-            # Oracle (distribution sampling)
+            # IdealSampling (distribution sampling)
             o_idx = rng.choice(
                 n, size=b, p=weights, replace=True,
             )
@@ -112,10 +187,49 @@ def compute_bias_data(
                 / t_norm
             )
 
+            # IdealEqualSplits
+            sort_order = np.argsort(logits)[::-1]
+            sorted_idx = np.arange(n)[sort_order]
+            num_groups = min(b, n)
+            group_size = max(1, n // num_groups)
+            groups = []
+            for i in range(num_groups):
+                start = i * group_size
+                end = (
+                    (i + 1) * group_size
+                    if i < num_groups - 1
+                    else n
+                )
+                if start >= n:
+                    break
+                groups.append(sorted_idx[start:end])
+            es_errs.append(
+                _ideal_grouping_error(
+                    q, keys, vals, head_dim,
+                    true_out, t_norm, groups,
+                )
+            )
+
+            # IdealEqualWeightSplits
+            w_sort = np.argsort(weights)[::-1]
+            sorted_idx_w = np.arange(n)[w_sort]
+            sorted_weights = weights[w_sort]
+            groups_w = _equal_weight_groups(
+                sorted_idx_w, sorted_weights, b,
+            )
+            ew_errs.append(
+                _ideal_grouping_error(
+                    q, keys, vals, head_dim,
+                    true_out, t_norm, groups_w,
+                )
+            )
+
         for key, errs in [
             ("topk", tk_errs),
             ("uniform", un_errs),
-            ("oracle_sampling", or_errs),
+            ("ideal_sampling", or_errs),
+            ("ideal_equal_splits", es_errs),
+            ("ideal_equal_weight_splits", ew_errs),
         ]:
             results[f"{key}_value_error"].append(
                 float(np.mean(errs)) if errs else 0.0
@@ -123,56 +237,6 @@ def compute_bias_data(
             results[f"{key}_value_std"].append(
                 float(np.std(errs)) if errs else 0.0
             )
-
-    # Oracle grouping (fixed budget, computed once)
-    for qpos in query_positions:
-        q = Q[qpos]
-        keys = K[:qpos + 1]
-        vals = V[:qpos + 1]
-        n = len(keys)
-        logits = (q @ keys.T) / np.sqrt(head_dim)
-        weights = softmax(logits)
-        true_out = weights @ vals
-        t_norm = np.linalg.norm(true_out)
-        if t_norm < 1e-10:
-            continue
-
-        sorted_idx = np.argsort(logits)[::-1]
-        boundaries = make_doubling_boundaries(n)
-        n_groups = len(boundaries)
-        sqrt_d = np.sqrt(head_dim)
-
-        group_scores = np.empty(n_groups)
-        group_vals = np.empty((n_groups, head_dim))
-        for gi, (start, end) in enumerate(boundaries):
-            g_idx = sorted_idx[start:end]
-            count = len(g_idx)
-            avg_k = np.mean(keys[g_idx], axis=0)
-            avg_v = np.mean(vals[g_idx], axis=0)
-            group_scores[gi] = (
-                q @ avg_k / sqrt_d + np.log(count)
-            )
-            group_vals[gi] = avg_v
-
-        w_og = softmax(group_scores)
-        out_og = w_og @ group_vals
-        og_errs.append(
-            np.linalg.norm(out_og - true_out) / t_norm
-        )
-
-    results["oracle_grouping_value_error"] = (
-        float(np.mean(og_errs)) if og_errs else 0.0
-    )
-    results["oracle_grouping_value_std"] = (
-        float(np.std(og_errs)) if og_errs else 0.0
-    )
-    # Store absolute budget for oracle grouping
-    if query_positions:
-        n_last = query_positions[-1] + 1
-        n_groups = len(make_doubling_boundaries(n_last))
-        results["oracle_grouping_budget"] = n_groups
-    else:
-        results["oracle_grouping_budget"] = 0
 
     return results
 
@@ -196,14 +260,18 @@ def plot_bias_comparison(
     for method, color, marker in [
         ("topk", "#d62728", "o"),
         ("uniform", "#ff7f0e", "^"),
-        ("oracle_sampling", "#2ca02c", "s"),
+        ("ideal_sampling", "#2ca02c", "s"),
+        ("ideal_equal_splits", "#1f77b4", "D"),
+        ("ideal_equal_weight_splits", "#9467bd", "X"),
     ]:
-        y = data[f"{method}_value_error"]
-        s = data[f"{method}_value_std"]
+        y = data.get(f"{method}_value_error", [])
+        s = data.get(f"{method}_value_std", [])
+        if not y:
+            continue
+        label = method.replace("_", " ").title()
         ax.plot(
             budgets, y, color=color, marker=marker,
-            lw=2, ms=7,
-            label=method.replace("_", " ").title(),
+            lw=2, ms=7, label=label,
         )
         y_arr = np.array(y)
         s_arr = np.array(s)
@@ -212,20 +280,6 @@ def plot_bias_comparison(
             np.maximum(y_arr - s_arr, 1e-10),
             y_arr + s_arr,
             color=color, alpha=0.15,
-        )
-
-    # Oracle grouping
-    og_err = data.get("oracle_grouping_value_error")
-    og_budget = data.get("oracle_grouping_budget")
-    if og_err is not None and og_budget:
-        ax.plot(
-            og_budget, og_err, color="#1f77b4",
-            marker="D", ms=9, zorder=5,
-            label="Oracle Grouping",
-        )
-        ax.axhline(
-            og_err, color="#1f77b4", ls="--",
-            lw=1, alpha=0.5,
         )
 
     ax.set_xlabel(

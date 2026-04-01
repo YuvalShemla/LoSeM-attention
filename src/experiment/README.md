@@ -80,7 +80,7 @@ starts. This prevents silent partial results.
 1. Load `experiment_config.yaml` for all hyperparameters
 2. **Validate data** — check every task has enough
    examples before starting any computation
-3. Resolve methods: auto-include baselines + expand
+3. Resolve methods: auto-include idealized methods + expand
    requested algorithms via `expand_from_config()`
 4. For each task:
    - Resolve heads (from mode config)

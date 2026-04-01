@@ -51,11 +51,11 @@ Each JSON file (both scout and per-example) has the same structure:
   "layer_0": {
     "head_0": {
       "full_entropy": 2.74,
-      "nonlocal_entropy": 8.17,
+      "effective_entropy": 8.17,
       "full_top1pct_mass": 0.97,
-      "nonlocal_top1pct_mass": 0.52,
+      "effective_top1pct_mass": 0.52,
       "full_top5pct_mass": 0.99,
-      "nonlocal_top5pct_mass": 0.82
+      "effective_top5pct_mass": 0.82
     },
     "head_1": { ... }
   },
@@ -72,13 +72,13 @@ Each metric is averaged over the last N query positions (configured via `head_st
 | Metric | Description |
 |--------|-------------|
 | `full_entropy` | Shannon entropy (nats) over all causal keys |
-| `nonlocal_entropy` | Entropy after excluding sink and local window, renormalized |
+| `effective_entropy` | Entropy after excluding sink and local window, renormalized |
 | `full_top1pct_mass` | Fraction of attention captured by the top 1% of keys |
-| `nonlocal_top1pct_mass` | Same, computed on the nonlocal portion only |
+| `effective_top1pct_mass` | Same, computed on the effective portion only |
 | `full_top5pct_mass` | Fraction of attention captured by the top 5% of keys |
-| `nonlocal_top5pct_mass` | Same, computed on the nonlocal portion only |
+| `effective_top5pct_mass` | Same, computed on the effective portion only |
 
-**"Nonlocal"** means: the sink token (position 0) and the local window (last 1024 positions) are masked out, and the remaining weights are renormalized before computing the metric. This isolates the long-range attention behavior from the trivially high-weight positions.
+**"Effective"** means: the configured sink tokens and local window are masked out, and the remaining weights are renormalized before computing the metric. This isolates the long-range attention behavior from the trivially high-weight positions.
 
 ## Head Selection
 
@@ -86,7 +86,7 @@ The extraction pipeline ranks all 1024 heads by a chosen metric and picks heads 
 
 ```yaml
 head_selection:
-  metric: "nonlocal_entropy"         # which metric to rank by
+  metric: "effective_entropy"         # which metric to rank by
   percentiles: [0, 25, 50, 75, 100]  # -> 5 heads
 ```
 
@@ -94,11 +94,11 @@ With the default settings, 5 heads are selected:
 
 | Percentile | Meaning |
 |-----------|---------|
-| P0 | Most concentrated attention (lowest nonlocal entropy) |
+| P0 | Most concentrated attention (lowest effective entropy) |
 | P25 | Below-average diffusion |
 | P50 | Median behavior |
 | P75 | Above-average diffusion |
-| P100 | Most diffuse attention (highest nonlocal entropy) |
+| P100 | Most diffuse attention (highest effective entropy) |
 
 The selected heads and their metric values are recorded in the `metadata.selected_heads` field of each scout JSON file.
 

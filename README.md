@@ -30,7 +30,7 @@ local-attention/
 │   ├── core.py             # Shared math: softmax, attention, entropy, kmeans
 │   ├── algorithms/         # Algorithm implementations
 │   │   ├── base.py         # ABC + dataclasses
-│   │   ├── baselines.py    # OracleTopK, OracleSampling, OracleGrouping
+│   │   ├── idealized_methods.py  # IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits
 │   │   ├── meanq_grouping.py
 │   │   ├── multiq_grouping.py
 │   │   └── kmeans_clustering.py
@@ -88,14 +88,14 @@ data/vectors/math_calc/
 
 Only layers containing selected heads are saved. See `data/vectors/README.md` for the full schema.
 
-## Baselines
+## Idealized Methods
 
-Always auto-included in every experiment:
-- **OracleTopK**: select top-B keys by logit (biased)
-- **OracleSampling**: sample from true attention weights
-  (privileged lower bound)
-- **Oracle Doubling**: doubling groups on oracle-sorted
-  keys (~log2(N) budget)
+Always auto-included in every experiment for comparison:
+- **IdealTopK**: select top-B keys by logit (biased)
+- **IdealSampling**: sample from true attention weights
+- **IdealEqualSplits**: equal-sized groups on sorted keys
+- **IdealEqualWeightSplits**: groups split by equal
+  attention weight mass
 
 ## Configuration
 

@@ -28,7 +28,7 @@ python -m src.extraction.extract_vectors
 
 1. **Scout pass** — runs the model on the shortest example with ALL 1024 heads (32 layers x 32 Q heads). No `.pt` files are saved. Computes per-head attention statistics (entropy, top-% mass) to characterize each head's attention pattern.
 
-2. **Head selection** — ranks all heads by `nonlocal_entropy` (entropy computed after excluding sink tokens and the local window) and picks heads at configurable percentile positions. This gives a representative spread from most concentrated to most diffuse attention.
+2. **Head selection** — ranks all heads by `effective_entropy` (entropy computed after excluding sink tokens and the local window) and picks heads at configurable percentile positions. This gives a representative spread from most concentrated to most diffuse attention.
 
 3. **Vectors pass** — runs the model again on N examples, extracting only the selected heads. Saves `.pt` files + metadata. GPU memory is aggressively freed between examples to avoid OOM.
 
@@ -84,7 +84,7 @@ extraction:
 ```yaml
 head_selection:
   mode: "auto"                              # or "explicit"
-  metric: "nonlocal_entropy"                # ranking metric
+  metric: "effective_entropy"                # ranking metric
   percentiles: [0, 25, 50, 75, 100]         # -> 5 heads
 ```
 
@@ -95,7 +95,7 @@ head_selection:
     mode: "explicit"
     explicit: [[17, 5], [19, 12], [31, 0]]  # [layer, q_head] pairs
   ```
-- **`metric`** — which statistic to rank heads by. `nonlocal_entropy` excludes sink and local window effects to capture global attention behavior. Alternatives: `full_entropy`, `nonlocal_top1pct_mass`, etc.
+- **`metric`** — which statistic to rank heads by. `effective_entropy` excludes sink and local window effects to capture effective attention behavior. Alternatives: `full_entropy`, `effective_top1pct_mass`, etc.
 - **`percentiles`** — which positions along the ranked head list to pick. `[0, 50, 100]` would give 3 heads (min, median, max).
 
 ### Head statistics (scout pass)
@@ -108,7 +108,7 @@ head_statistics:
   top_pct_for_mass: [1, 5] # compute top-1% and top-5% mass
 ```
 
-These control how the per-head statistics are computed during the scout pass. The `n_sink_tokens` and `local_window` define the boundary between "local" and "nonlocal" attention.
+These control how the per-head statistics are computed during the scout pass. The `n_sink_tokens` and `local_window` define which tokens are excluded from the effective entropy computation.
 
 ### Output paths
 

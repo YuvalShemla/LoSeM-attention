@@ -14,26 +14,36 @@ We approximate o* using only B << N key interactions.
     ||o_hat - o*||_2 / ||o*||_2
 
 
-## Baselines
+## Idealized Methods
 
-### OracleTopK
+These represent the best achievable accuracy at a given
+budget. They use oracle knowledge (true logits/weights)
+and spend per-query computation on grouping. Any new
+algorithm should be compared against these idealized
+methods to gauge how close it gets to the theoretical
+best.
+
+All idealized methods are automatically included in
+every experiment run.
+
+
+### IdealTopK
 
 Select the B keys with largest logits q^T k_i / sqrt(d).
 Renormalize softmax over the selected subset.
 
 
-### Oracle Sampling
+### IdealSampling
 
 Sample B keys proportional to the true attention weights
 (with replacement). Simple average of sampled values
 (unbiased Monte Carlo estimator).
 
 
+### IdealEqualSplits
 
-### Oracle Grouping (Much better than the previous baselines)
-
-1. For each query, Sort all non-special keys by logit (descending)
-2. Create doubling groups: sizes 1, 1, 2, 4, 8, 16, ...
+1. For each query, sort all non-special keys by logit (descending)
+2. Split into B equal-sized groups
 3. Represent each group by (avg_key, avg_value)
 4. Score: q^T avg_key / sqrt(d) + log(group_count)
 5. Softmax over special keys + all group reps
@@ -42,11 +52,30 @@ The log(count) term in the score compensates for the fact
 that a group of C keys should carry C times the attention
 mass of a single key with the same average logit.
 
-Budget: ~log2(N) groups.
+Budget: scales with B (the number of groups requested).
 
 
-All baselins are not possible when attempting to speed up the N^2 attention - they requires knowing the true attention
-distribution.
+### IdealEqualWeightSplits
+
+1. For each query, sort all non-special keys by attention
+   weight (descending)
+2. Split into B groups so each group captures approximately
+   equal total attention weight mass. High-weight keys get
+   more groups (finer resolution where it matters).
+3. Represent each group by (avg_key, avg_value)
+4. Score: q^T avg_key / sqrt(d) + log(group_count)
+5. Softmax over special keys + all group reps
+
+This is a smarter per-query grouping strategy that
+allocates groups proportional to attention mass, giving
+finer resolution where it matters most.
+
+Budget: scales with B (the number of groups requested).
+
+
+All idealized methods require knowing the true attention
+distribution and are not possible when attempting to
+speed up N^2 attention in practice.
 
 
 ### Grouping Methods
@@ -89,7 +118,7 @@ In many implementations, positions 0 (attention sink) and the last W positions
 (local window) always receive exact attention. The
 approximation applies only to the remaining candidate keys.
 The final softmax is computed jointly over special keys
-and approximated keys/groups. 
+and approximated keys/groups.
 
 
 
@@ -110,9 +139,9 @@ and approximated keys/groups.
 
 ### MultiQ Grouping
 
-Instead of a single MeanQ, find multiple queries to use for initial sorting. 
+Instead of a single MeanQ, find multiple queries to use for initial sorting.
 
-Current implementation: 
+Current implementation:
 1. Run KMeans on all query vectors -> C centroids
 2. For each centroid c_j: sort keys by
    c_j^T k_i / sqrt(d), partition into G groups
@@ -120,8 +149,8 @@ Current implementation:
    (argmax c_j^T q), use that centroid's grouping
 4. Apply TopK or Hybrid mode
 
-**Cost:** Offline O(C * N log N). Per-query O(C + G). 
-Can benift from paritally sorted arrays (faster).
+**Cost:** Offline O(C * N log N). Per-query O(C + G).
+Can benefit from partially sorted arrays (faster).
 
 Advantage over MeanQ: adapts to query diversity. Different
 query clusters get different key orderings.
@@ -138,4 +167,3 @@ query clusters get different key orderings.
 5. Apply TopK or Hybrid mode
 
 **Cost:** Offline O(N * C * n_iter). Per-query O(C).
-

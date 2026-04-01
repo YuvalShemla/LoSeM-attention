@@ -55,10 +55,10 @@ def compute_head_statistics(
     n_q = min(n_queries, seq_len)
     if n_q <= 0:
         zero = {"full_entropy": 0.0,
-                "nonlocal_entropy": 0.0}
+                "effective_entropy": 0.0}
         for pct in top_pcts:
             zero[f"full_top{pct}pct_mass"] = 1.0
-            zero[f"nonlocal_top{pct}pct_mass"] = 1.0
+            zero[f"effective_top{pct}pct_mass"] = 1.0
         return zero
 
     start = max(0, seq_len - n_q)
@@ -90,7 +90,7 @@ PERCENTILE_LABELS = {
 
 def select_heads_by_percentile(
     stats: Dict,
-    metric: str = "nonlocal_entropy",
+    metric: str = "effective_entropy",
     percentiles: List[int] = (0, 25, 50, 75, 100),
 ) -> List[Tuple[int, int, int, str]]:
     """
@@ -412,7 +412,7 @@ def run(config: dict, data_root: Path):
             selected = select_heads_by_percentile(
                 stats,
                 sel_cfg.get(
-                    "metric", "nonlocal_entropy"
+                    "metric", "effective_entropy"
                 ),
                 sel_cfg.get(
                     "percentiles",
@@ -429,13 +429,13 @@ def run(config: dict, data_root: Path):
                     val = stats[lk][hk].get(
                         sel_cfg.get(
                             "metric",
-                            "nonlocal_entropy",
+                            "effective_entropy",
                         ), 0.0,
                     )
                 selected_meta.append({
                     "layer": l, "q_head": h,
                     "kv_head": h // gqa,
-                    "nonlocal_entropy": val,
+                    "effective_entropy": val,
                     "percentile": pct,
                     "selection_label": lbl,
                 })

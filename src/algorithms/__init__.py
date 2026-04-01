@@ -1,17 +1,18 @@
 """
 Algorithm registry.
 
-Baselines are distinguished by kind='baseline' and are
-auto-included in every experiment. Algorithms must be
-explicitly requested.
+Idealized methods are distinguished by kind='idealized'
+and are auto-included in every experiment. Algorithms
+must be explicitly requested.
 """
 
 from dataclasses import dataclass
 
-from .baselines import (
-    OracleTopK,
-    OracleSampling,
-    OracleGrouping,
+from .idealized_methods import (
+    IdealTopK,
+    IdealSampling,
+    IdealEqualSplits,
+    IdealEqualWeightSplits,
 )
 from .multiq_grouping import MultiQGrouping
 from .kmeans_clustering import KMeansClustering
@@ -20,18 +21,21 @@ from .kmeans_clustering import KMeansClustering
 @dataclass
 class MethodSpec:
     cls: type
-    kind: str   # "baseline" or "algorithm"
+    kind: str   # "idealized" or "algorithm"
 
 
 METHOD_REGISTRY = {
-    "oracle_topk": MethodSpec(
-        OracleTopK, "baseline",
+    "ideal_topk": MethodSpec(
+        IdealTopK, "idealized",
     ),
-    "oracle_sampling": MethodSpec(
-        OracleSampling, "baseline",
+    "ideal_sampling": MethodSpec(
+        IdealSampling, "idealized",
     ),
-    "oracle_grouping": MethodSpec(
-        OracleGrouping, "baseline",
+    "ideal_equal_splits": MethodSpec(
+        IdealEqualSplits, "idealized",
+    ),
+    "ideal_equal_weight_splits": MethodSpec(
+        IdealEqualWeightSplits, "idealized",
     ),
     "multiq": MethodSpec(
         MultiQGrouping, "algorithm",

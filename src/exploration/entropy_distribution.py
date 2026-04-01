@@ -39,7 +39,7 @@ def compute_entropy_data(
     results = {
         "positions": query_positions,
         "full_entropy": [],
-        "nonlocal_entropy": [],
+        "effective_entropy": [],
     }
 
     for qpos in query_positions:
@@ -60,11 +60,11 @@ def compute_entropy_data(
         total = np.sum(w_masked)
         if total > 1e-10:
             w_normed = w_masked / total
-            results["nonlocal_entropy"].append(
+            results["effective_entropy"].append(
                 entropy_nats(w_normed)
             )
         else:
-            results["nonlocal_entropy"].append(
+            results["effective_entropy"].append(
                 0.0
             )
 
@@ -90,7 +90,7 @@ def plot_entropy(
 
     pos = data["positions"]
     e_full = data["full_entropy"]
-    e_no_sl = data["nonlocal_entropy"]
+    e_no_sl = data["effective_entropy"]
 
     ax1.plot(
         pos, e_full, label="Full", lw=1.5,

@@ -8,8 +8,8 @@ implements the `AttentionAlgorithm` ABC from `base.py`.
 ```python
 class AttentionAlgorithm(ABC):
     name: str                    # display name
-    kind: str                    # "baseline" or "algorithm"
-    sweeps_budget: bool          # True for OracleTopK/Oracle
+    kind: str                    # "idealized" or "algorithm"
+    sweeps_budget: bool          # True for budget-sweeping methods
 
     def prepare(keys, values, head_dim, ...)  # offline
     def run(problem, budget, rng) -> AttentionOutput
@@ -21,8 +21,8 @@ class AttentionAlgorithm(ABC):
 | File | Contents |
 |------|----------|
 | `base.py` | ABC, AttentionInput/Output dataclasses |
-| `../core.py` | softmax, rel_l2, hybrid_attention, doubling/equal groups |
-| `baselines.py` | OracleTopK, OracleSampling, OracleGrouping |
+| `../core.py` | softmax, rel_l2, hybrid_attention, equal groups |
+| `idealized_methods.py` | IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits |
 | `meanq_grouping.py` | MeanQ: sort by mean-query projection |
 | `multiq_grouping.py` | MultiQ: KMeans on queries, per-centroid ordering |
 | `kmeans_clustering.py` | KMeans on keys, per-query cluster scoring |
@@ -36,6 +36,8 @@ class AttentionAlgorithm(ABC):
 4. Override `prepare()` if offline precomputation needed
 5. Add to `METHOD_REGISTRY` in `__init__.py`
 
-The runner auto-discovers baselines (kind="baseline")
-and requires algorithms to be explicitly requested via
-`--algorithms`.
+The experiment runner auto-discovers idealized methods
+(kind="idealized") and requires algorithms to be
+explicitly requested via `--algorithms`. Every new
+algorithm will automatically be tested against the
+idealized methods.

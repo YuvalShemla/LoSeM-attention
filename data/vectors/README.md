@@ -22,7 +22,7 @@ vectors/
     └── ex_004/
 ```
 
-Each task has 5 examples, and each example contains only the layers where selected heads reside. The selected heads (5 per task) are chosen by nonlocal entropy percentile during the extraction scout pass.
+Each task has 5 examples, and each example contains only the layers where selected heads reside. The selected heads (5 per task) are chosen by effective entropy percentile during the extraction scout pass.
 
 ## .pt File Contents
 
@@ -50,15 +50,15 @@ GQA mapping: Q head i maps to KV head `i // 4`.
 
 ## Selected Heads
 
-The extraction pipeline selects 5 heads per task by nonlocal entropy percentile:
+The extraction pipeline selects 5 heads per task by effective entropy percentile:
 
 | Percentile | Meaning |
 |-----------|---------|
-| P0 | Most concentrated attention (lowest nonlocal entropy) |
+| P0 | Most concentrated attention (lowest effective entropy) |
 | P25 | Below-average diffusion |
 | P50 | Median behavior |
 | P75 | Above-average diffusion |
-| P100 | Most diffuse attention (highest nonlocal entropy) |
+| P100 | Most diffuse attention (highest effective entropy) |
 
 The selected heads and their layer/head indices are in `metadata.json`:
 

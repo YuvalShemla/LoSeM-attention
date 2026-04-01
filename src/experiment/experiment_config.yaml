@@ -124,15 +124,15 @@ plotting:
   dpi: 200
   log_scale: true
   linear_scale: true
-  baseline_linestyle: "--"
+  idealized_linestyle: "--"
   algorithm_linestyle: "-"
   error_bands: false
 
-  baseline_colors:
-    OracleTopK: "#d62728"                    # red
-    OracleSampling: "#2ca02c"                # green
-    "Oracle Grouping": "#1f77b4"             # blue
-    "Oracle Grouping (no last)": "#1f77b4"   # blue
+  idealized_colors:
+    IdealTopK: "#d62728"                     # red
+    IdealSampling: "#2ca02c"                 # green
+    IdealEqualSplits: "#1f77b4"              # blue
+    IdealEqualWeightSplits: "#9467bd"        # purple
 
   algorithm_colors:
     kmeans:

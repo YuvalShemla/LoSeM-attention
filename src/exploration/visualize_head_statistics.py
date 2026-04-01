@@ -44,19 +44,19 @@ C_NSL = "#DD8452"
 
 # All 6 metrics used in per-example and stability plots
 METRICS = [
-    "full_entropy", "nonlocal_entropy",
-    "full_top1pct_mass", "nonlocal_top1pct_mass",
-    "full_top5pct_mass", "nonlocal_top5pct_mass",
+    "full_entropy", "effective_entropy",
+    "full_top1pct_mass", "effective_top1pct_mass",
+    "full_top5pct_mass", "effective_top5pct_mass",
 ]
 
-# Paired metrics for box plots: (full, nonlocal, label, ylim)
+# Paired metrics for box plots: (full, effective, label, ylim)
 METRIC_PAIRS = [
-    ("full_entropy", "nonlocal_entropy",
+    ("full_entropy", "effective_entropy",
      "entropy", "Entropy (nats)", "Entropy", None),
-    ("full_top1pct_mass", "nonlocal_top1pct_mass",
+    ("full_top1pct_mass", "effective_top1pct_mass",
      "top1pct_mass", "Top 1% Mass", "Top 1% Attention Mass",
      (-0.05, 1.08)),
-    ("full_top5pct_mass", "nonlocal_top5pct_mass",
+    ("full_top5pct_mass", "effective_top5pct_mass",
      "top5pct_mass", "Top 5% Mass", "Top 5% Attention Mass",
      (-0.05, 1.08)),
 ]
@@ -66,11 +66,11 @@ METRIC_PAIRS = [
 
 _METRIC_ALIASES = {
     "entropy_full": "full_entropy",
-    "entropy_nonlocal": "nonlocal_entropy",
+    "entropy_nonlocal": "effective_entropy",
     "top1pct_mass_full": "full_top1pct_mass",
-    "top1pct_mass_nonlocal": "nonlocal_top1pct_mass",
+    "top1pct_mass_nonlocal": "effective_top1pct_mass",
     "top5pct_mass_full": "full_top5pct_mass",
-    "top5pct_mass_nonlocal": "nonlocal_top5pct_mass",
+    "top5pct_mass_nonlocal": "effective_top5pct_mass",
 }
 
 
@@ -181,7 +181,7 @@ def _task_boxplot(
     ylabel, title, ylim=None, example_meta=None,
     n_heads_label=None,
 ):
-    """Paired box plots comparing full vs nonlocal per task."""
+    """Paired box plots comparing full vs effective per task."""
     positions_full = []
     positions_nsl = []
     spacing = 1.0
@@ -303,7 +303,7 @@ def plot_task_summary_entropy(
         for t in tasks
     ]
     data_nsl = [
-        collect_all_values(all_stats[t], "nonlocal_entropy")
+        collect_all_values(all_stats[t], "effective_entropy")
         for t in tasks
     ]
     fig, ax = plt.subplots(figsize=(8, 5.5))
@@ -332,7 +332,7 @@ def plot_task_summary_mass(
     ]
     data_nsl = [
         collect_all_values(
-            all_stats[t], f"nonlocal_top{pct}pct_mass",
+            all_stats[t], f"effective_top{pct}pct_mass",
         ) for t in tasks
     ]
     fig, ax = plt.subplots(figsize=(8, 5.5))
@@ -578,7 +578,7 @@ def plot_stability(
 
 def _metric_display(metric: str) -> str:
     """Human-readable metric name for titles."""
-    m = metric.replace("full_", "").replace("nonlocal_", "")
+    m = metric.replace("full_", "").replace("effective_", "")
     return {
         "entropy": "Entropy",
         "top1pct_mass": "Top 1% Mass",
@@ -587,7 +587,7 @@ def _metric_display(metric: str) -> str:
 
 
 def _metric_ylabel(metric: str) -> str:
-    m = metric.replace("full_", "").replace("nonlocal_", "")
+    m = metric.replace("full_", "").replace("effective_", "")
     return {
         "entropy": "Entropy (nats)",
         "top1pct_mass": "Top 1% Mass",
@@ -678,7 +678,7 @@ def _load_selected_heads(stats_dir: Path, task: str):
     """Load selected heads info from scout JSON metadata.
 
     Returns list of dicts with layer, q_head, kv_head,
-    nonlocal_entropy, and a percentile label.
+    effective_entropy, and a percentile label.
     """
     p = stats_dir / f"{task}.json"
     if not p.exists():
@@ -716,7 +716,7 @@ def plot_selected_heads_bar(
     ylabel: str, title: str,
     out_path: Path, ylim=None,
 ):
-    """Grouped bar: full + nonlocal for each selected head."""
+    """Grouped bar: full + effective for each selected head."""
     n = len(selected)
     full_vals = [
         _get_head_stat(
@@ -925,7 +925,7 @@ def generate_selected_heads_plots(
 
         print(f"    {task}: {len(selected)} selected heads")
 
-        # Bar chart: 5 heads, full vs nonlocal
+        # Bar chart: 5 heads, full vs effective
         for (m_full, m_nsl, suffix, ylabel,
              title, ylim) in METRIC_PAIRS:
             plot_selected_heads_bar(
@@ -1043,7 +1043,7 @@ def main():
         layer_avgs = extract_layer_averages(stats)
         plot_layer_bars(
             task, layer_avgs,
-            "full_entropy", "nonlocal_entropy",
+            "full_entropy", "effective_entropy",
             "Entropy (nats)",
             "Average Entropy by Layer",
             td / "layer_entropy.png",
@@ -1051,7 +1051,7 @@ def main():
         plot_layer_bars(
             task, layer_avgs,
             "full_top1pct_mass",
-            "nonlocal_top1pct_mass",
+            "effective_top1pct_mass",
             "Top 1% Mass",
             "Average Top 1% Mass by Layer",
             td / "layer_top1pct_mass.png",
@@ -1060,7 +1060,7 @@ def main():
         plot_layer_bars(
             task, layer_avgs,
             "full_top5pct_mass",
-            "nonlocal_top5pct_mass",
+            "effective_top5pct_mass",
             "Top 5% Mass",
             "Average Top 5% Mass by Layer",
             td / "layer_top5pct_mass.png",

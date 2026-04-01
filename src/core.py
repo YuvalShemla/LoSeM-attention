@@ -135,14 +135,14 @@ def attention_stats_for_query(
 
     stats = {
         "full_entropy": entropy_nats(weights),
-        "nonlocal_entropy": 0.0,
+        "effective_entropy": 0.0,
     }
 
     w_masked = weights[mask]
     total = np.sum(w_masked)
     if total > 1e-10:
         w_normed = w_masked / total
-        stats["nonlocal_entropy"] = (
+        stats["effective_entropy"] = (
             entropy_nats(w_normed)
         )
     else:
@@ -153,11 +153,11 @@ def attention_stats_for_query(
             top_pct_mass(weights, pct)
         )
         if w_normed is not None:
-            stats[f"nonlocal_top{pct}pct_mass"] = (
+            stats[f"effective_top{pct}pct_mass"] = (
                 top_pct_mass(w_normed, pct)
             )
         else:
-            stats[f"nonlocal_top{pct}pct_mass"] = 1.0
+            stats[f"effective_top{pct}pct_mass"] = 1.0
 
     return stats
 
@@ -177,14 +177,14 @@ def stats_from_weights(
 
     stats = {
         "full_entropy": entropy_nats(weights),
-        "nonlocal_entropy": 0.0,
+        "effective_entropy": 0.0,
     }
 
     w_masked = weights[mask]
     total = np.sum(w_masked)
     if total > 1e-10:
         w_normed = w_masked / total
-        stats["nonlocal_entropy"] = (
+        stats["effective_entropy"] = (
             entropy_nats(w_normed)
         )
     else:
@@ -195,11 +195,11 @@ def stats_from_weights(
             top_pct_mass(weights, pct)
         )
         if w_normed is not None:
-            stats[f"nonlocal_top{pct}pct_mass"] = (
+            stats[f"effective_top{pct}pct_mass"] = (
                 top_pct_mass(w_normed, pct)
             )
         else:
-            stats[f"nonlocal_top{pct}pct_mass"] = 1.0
+            stats[f"effective_top{pct}pct_mass"] = 1.0
 
     return stats
 
