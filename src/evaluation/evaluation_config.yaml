@@ -1,9 +1,9 @@
 # ══════════════════════════════════════════════════════
-# Experiment Configuration
+# Evaluation Configuration
 # ══════════════════════════════════════════════════════
 #
-# Controls what the experiment runner evaluates and how.
-# See src/experiment/README.md for full documentation.
+# Controls what the evaluation runner evaluates and how.
+# See src/evaluation/README.md for full documentation.
 
 # ── Model ──
 model:
@@ -38,7 +38,7 @@ tasks:
   - single_doc_qa
 
 # ══════════════════════════════════════════════════════
-# Experiment Scope
+# Evaluation Scope
 # ══════════════════════════════════════════════════════
 #
 # Three knobs control what gets evaluated:
@@ -58,7 +58,7 @@ tasks:
 #   selected_heads
 #     Reads which (layer, head) combos to use from
 #     each task's metadata.json.
-#     Use for: main experiments after head selection.
+#     Use for: main evaluations after head selection.
 #
 #   custom
 #     Explicit (layer, q_head, kv_head) list.
@@ -67,7 +67,7 @@ tasks:
 # n_examples is strict: if a task has fewer examples
 # on disk than requested, the run fails immediately.
 
-experiment:
+evaluation:
   seed: 42
   n_queries: 10         # query positions per example (last N tokens)
   n_examples: 1         # examples per task (strict)
@@ -81,7 +81,7 @@ experiment:
   head_mode: "selected_heads"
 
   # Used only when head_mode is "all_heads".
-  layers: [17]                # or "all" for every layer
+  layers: "all"                # or "all" for every layer
 
   # Used only when head_mode is "custom".
   custom_heads:
@@ -89,7 +89,7 @@ experiment:
 
   exclude_sink_token: true
   local_window:
-    size: 1024
+    size: 0
 
   budget_sweep:
     absolute:
@@ -101,7 +101,7 @@ experiment:
       - 512
       - 1024
       - 2048
-      - 3000
+
 
 # ── Algorithm Parameter Sweeps ──
 # Each key matches a METHOD_REGISTRY name.
@@ -149,20 +149,20 @@ plotting:
 # ══════════════════════════════════════════════════════
 #
 # --- Scout: 1 example, all heads, all 4 layers ---
-# experiment:
+# evaluation:
 #   n_examples: 1
 #   n_queries: 50
 #   head_mode: "all_heads"
 #   layers: [0, 17, 19, 31]
 #
-# --- Full experiment: 10 examples, selected heads ---
-# experiment:
+# --- Full evaluation: 10 examples, selected heads ---
+# evaluation:
 #   n_examples: 10
 #   n_queries: 100
 #   head_mode: "selected_heads"
 #
 # --- Debug: 1 example, one head, tiny sweep ---
-# experiment:
+# evaluation:
 #   n_examples: 1
 #   n_queries: 10
 #   head_mode: "custom"

@@ -1,7 +1,7 @@
 """
 Per-query evaluation and result aggregation.
 
-Separated from run_experiment.py to keep each file focused.
+Separated from run_evaluation.py to keep each file focused.
 """
 
 import numpy as np

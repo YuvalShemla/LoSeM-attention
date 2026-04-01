@@ -1,7 +1,7 @@
 """
-Plotting for attention experiments.
+Plotting for attention evaluations.
 
-Matches the style from experiment 10 (math_calc_bootstrap):
+Matches the style from evaluation 10 (math_calc_bootstrap):
   - Idealized: dashed lines (IdealTopK red, Sampling green,
     Equal Splits blue, Equal Weight Splits purple)
   - Algorithms: TopK (dashed) + Hybrid (solid) families
@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 
 def setup_style():
     """Publication-quality matplotlib config."""
-    sns.set_style("whitegrid")
+    sns.set_style("white")
     plt.rcParams["font.family"] = "sans-serif"
     plt.rcParams["font.sans-serif"] = [
         "Arial", "DejaVu Sans", "Helvetica",
@@ -98,79 +98,38 @@ def plot_idealized_methods(
     colors = plot_cfg.get("idealized_colors", {})
     show_bands = plot_cfg.get("error_bands", True)
 
-    # IdealTopK — red dashed line
-    x, y, s = [], [], []
-    for b in budgets:
-        k = f"IdealTopK-{b}"
-        if k in agg:
-            x.append(agg[k]["budget_mean"])
-            y.append(agg[k]["error_mean"])
-            s.append(agg[k].get("error_std", 0))
-    if x:
-        _plot_with_error_band(
-            ax, x, y, s if show_bands else None,
-            color=colors.get(
-                "IdealTopK", "#d62728",
-            ),
-            ls="--", marker="o", lw=2.5, ms=7,
-            zorder=4,
-            label="IdealTopK (individual keys)",
-        )
+    idealized_specs = [
+        ("IdealTopK", "IdealTopK (individual keys)"),
+        ("IdealSampling", "IdealSampling"),
+        ("IdealEqualSplits", "IdealEqualSplits"),
+        ("IdealEqualWeightSplits", "IdealEqualWeightSplits"),
+    ]
+    default_colors = {
+        "IdealTopK": "#d62728",
+        "IdealSampling": "#2ca02c",
+        "IdealEqualSplits": "#1f77b4",
+        "IdealEqualWeightSplits": "#9467bd",
+    }
 
-    # IdealSampling — green dashed line
-    x, y, s = [], [], []
-    for b in budgets:
-        k = f"IdealSampling-{b}"
-        if k in agg:
-            x.append(agg[k]["budget_mean"])
-            y.append(agg[k]["error_mean"])
-            s.append(agg[k].get("error_std", 0))
-    if x:
-        _plot_with_error_band(
-            ax, x, y, s if show_bands else None,
-            color=colors.get("IdealSampling", "#2ca02c"),
-            ls="--", marker="^", lw=2.5, ms=7,
-            zorder=4,
-            label="IdealSampling",
-        )
-
-    # IdealEqualSplits — blue dashed line
-    x, y, s = [], [], []
-    for b in budgets:
-        k = f"IdealEqualSplits-{b}"
-        if k in agg:
-            x.append(agg[k]["budget_mean"])
-            y.append(agg[k]["error_mean"])
-            s.append(agg[k].get("error_std", 0))
-    if x:
-        _plot_with_error_band(
-            ax, x, y, s if show_bands else None,
-            color=colors.get(
-                "IdealEqualSplits", "#1f77b4",
-            ),
-            ls="--", marker="s", lw=2.5, ms=7,
-            zorder=4,
-            label="IdealEqualSplits",
-        )
-
-    # IdealEqualWeightSplits — purple dashed line
-    x, y, s = [], [], []
-    for b in budgets:
-        k = f"IdealEqualWeightSplits-{b}"
-        if k in agg:
-            x.append(agg[k]["budget_mean"])
-            y.append(agg[k]["error_mean"])
-            s.append(agg[k].get("error_std", 0))
-    if x:
-        _plot_with_error_band(
-            ax, x, y, s if show_bands else None,
-            color=colors.get(
-                "IdealEqualWeightSplits", "#9467bd",
-            ),
-            ls="--", marker="D", lw=2.5, ms=7,
-            zorder=4,
-            label="IdealEqualWeightSplits",
-        )
+    for method_name, label in idealized_specs:
+        x, y, s = [], [], []
+        for b in budgets:
+            k = f"{method_name}-{b}"
+            if k in agg:
+                x.append(agg[k]["budget_mean"])
+                y.append(agg[k]["error_mean"])
+                s.append(agg[k].get("error_std", 0))
+        if x:
+            _plot_with_error_band(
+                ax, x, y, s if show_bands else None,
+                color=colors.get(
+                    method_name,
+                    default_colors[method_name],
+                ),
+                ls="--", marker="o", lw=2.5, ms=7,
+                zorder=4,
+                label=label,
+            )
 
 
 def plot_algorithm_family(
@@ -246,7 +205,7 @@ def plot_algorithm_family(
                 )
 
 
-def plot_experiment(
+def plot_evaluation(
     agg: Dict,
     out_dir: Path,
     plot_cfg: Dict,
@@ -324,9 +283,6 @@ def plot_experiment(
         ax.legend(
             fontsize=8, loc="upper right", ncol=2,
         )
-        ax.grid(
-            True, alpha=0.3, ls="--", which="both",
-        )
 
         plt.tight_layout()
         fname = f"{filename}_{scale}.png"
@@ -398,8 +354,6 @@ def plot_overview(
                 ax.set_xscale("log")
                 ax.set_yscale("log")
                 _format_log_axes(ax, budgets)
-            ax.grid(True, alpha=0.3, ls="--",
-                    which="both")
             if i == 0:
                 ax.legend(fontsize=7, loc="upper right")
 
@@ -567,10 +521,6 @@ def plot_per_head_comparison(
                 ax.set_xscale("log")
                 ax.set_yscale("log")
                 _format_log_axes(ax, budgets)
-            ax.grid(
-                True, alpha=0.3, ls="--",
-                which="both",
-            )
 
         # Use the first spare cell for info panel,
         # hide remaining spare cells

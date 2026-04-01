@@ -24,7 +24,7 @@ methods to gauge how close it gets to the theoretical
 best.
 
 All idealized methods are automatically included in
-every experiment run.
+every evaluation run.
 
 
 ### IdealTopK

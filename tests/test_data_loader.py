@@ -52,7 +52,7 @@ def test_pt_example_loading():
     except ImportError:
         pytest.skip("torch not installed")
 
-    from src.experiment.data_loader import (
+    from src.evaluation.data_loader import (
         load_pt_example,
     )
 
@@ -98,7 +98,7 @@ def test_pt_example_loading():
 
 def test_discover_examples():
     """discover_examples finds ex_NNN directories."""
-    from src.experiment.data_loader import (
+    from src.evaluation.data_loader import (
         discover_examples,
     )
 
@@ -125,7 +125,7 @@ def test_load_examples_iterator():
     except ImportError:
         pytest.skip("torch not installed")
 
-    from src.experiment.data_loader import (
+    from src.evaluation.data_loader import (
         load_examples,
     )
 
@@ -168,7 +168,7 @@ def test_load_examples_iterator():
 
 def test_count_examples():
     """count_examples returns correct count."""
-    from src.experiment.data_loader import (
+    from src.evaluation.data_loader import (
         count_examples,
     )
 

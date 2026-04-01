@@ -1,6 +1,6 @@
 # Research Notes
 
-Running doc for observations, open questions, and directions that come up during experiments. Revisit periodically.
+Running doc for observations, open questions, and directions that come up during evaluations. Revisit periodically.
 
 ---
 

@@ -2,7 +2,7 @@
 Idealized attention methods: IdealTopK, IdealSampling,
 IdealEqualSplits, IdealEqualWeightSplits.
 
-Always included in every experiment. These represent the
+Always included in every evaluation. These represent the
 best achievable accuracy at a given budget because they
 use oracle knowledge (true logits) and spend per-query
 computation on grouping. Any new algorithm should be
@@ -15,6 +15,20 @@ from .base import (
     AttentionAlgorithm, AttentionInput, AttentionOutput,
 )
 from ..core import softmax, subset_attention
+
+
+def _equal_size_split(indices, n_groups):
+    """Split indices into n_groups equal-sized groups."""
+    n = len(indices)
+    group_size = max(1, n // n_groups)
+    groups = []
+    for i in range(n_groups):
+        start = i * group_size
+        end = (i + 1) * group_size if i < n_groups - 1 else n
+        if start >= n:
+            break
+        groups.append(indices[start:end])
+    return groups
 
 
 class IdealTopK(AttentionAlgorithm):
@@ -364,6 +378,11 @@ class IdealEqualWeightSplits(AttentionAlgorithm):
         Split so each group captures ~equal total weight
         mass. High-weight keys get more groups (finer
         resolution where it matters).
+
+        Always produces exactly num_groups groups (or n
+        groups if n < num_groups) by falling back to
+        equal-sized splits for any segment that the
+        weight-based splitting cannot subdivide further.
         """
         n = len(sorted_idx)
         num_groups = min(num_groups, n)
@@ -375,20 +394,9 @@ class IdealEqualWeightSplits(AttentionAlgorithm):
         cumsum = np.cumsum(sorted_weights)
         total = cumsum[-1]
         if total < 1e-12:
-            # Fallback to equal-sized splits
-            group_size = max(1, n // num_groups)
-            groups = []
-            for i in range(num_groups):
-                start = i * group_size
-                end = (
-                    (i + 1) * group_size
-                    if i < num_groups - 1
-                    else n
-                )
-                if start >= n:
-                    break
-                groups.append(sorted_idx[start:end])
-            return groups
+            return _equal_size_split(
+                sorted_idx, num_groups,
+            )
 
         # Target cumulative weight boundaries
         targets = np.linspace(
@@ -397,17 +405,40 @@ class IdealEqualWeightSplits(AttentionAlgorithm):
         split_indices = np.searchsorted(
             cumsum, targets,
         )
-        split_indices = np.unique(
-            np.clip(split_indices, 1, n - 1)
+        split_indices = np.clip(split_indices, 1, n - 1)
+
+        # Build initial segments from weight boundaries
+        # (may be fewer than num_groups due to duplicates)
+        boundaries = list(
+            dict.fromkeys(split_indices.tolist())
         )
-
-        groups = []
+        segments = []
         prev = 0
-        for sp in split_indices:
-            groups.append(sorted_idx[prev:sp])
+        for sp in boundaries:
+            if sp > prev:
+                segments.append((prev, sp))
             prev = sp
-        groups.append(sorted_idx[prev:])
+        if prev < n:
+            segments.append((prev, n))
 
+        # Subdivide segments until we have num_groups
+        while len(segments) < num_groups:
+            # Find the largest segment to split
+            best = max(
+                range(len(segments)),
+                key=lambda i: segments[i][1] - segments[i][0],
+            )
+            s, e = segments[best]
+            if e - s < 2:
+                break  # can't split single-element
+            mid = (s + e) // 2
+            segments[best:best + 1] = [
+                (s, mid), (mid, e),
+            ]
+
+        groups = [
+            sorted_idx[s:e] for s, e in segments
+        ]
         return groups
 
     @staticmethod

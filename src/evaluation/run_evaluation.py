@@ -1,12 +1,12 @@
 """
-Experiment runner: load .pt data, evaluate methods, plot.
+Evaluation runner: load .pt data, evaluate methods, plot.
 
 Handles the full lifecycle across multiple tasks.
-Baselines are auto-included. Results organized into
-per_task/ subfolders and overview/ summaries.
+Idealized methods are auto-included. Results organized
+into per_task/ subfolders and overview/ summaries.
 
 Usage:
-  python -m src.experiment.run_experiment \\
+  python -m src.evaluation.run_evaluation \\
     --algorithms multiq kmeans \\
     --tasks math_calc code_run \\
     --name grouping_comparison_v1
@@ -35,11 +35,11 @@ from .evaluator import (
     weighted_aggregate_heads,
 )
 from .plotting import (
-    plot_experiment, plot_overview,
+    plot_evaluation, plot_overview,
     plot_per_head_comparison, setup_style,
 )
 
-log = logging.getLogger("experiment")
+log = logging.getLogger("evaluation")
 
 
 def _resolve_methods(algo_names, algo_configs):
@@ -69,7 +69,7 @@ def _last_query_positions(
 
 
 def _setup_logging():
-    """Configure logging for experiment output."""
+    """Configure logging for evaluation output."""
     if not log.handlers:
         h = logging.StreamHandler()
         h.setFormatter(logging.Formatter(
@@ -79,8 +79,8 @@ def _setup_logging():
         log.setLevel(logging.INFO)
 
 
-class Experiment:
-    """Concrete experiment class for .pt data."""
+class Evaluation:
+    """Concrete evaluation class for .pt data."""
 
     def __init__(
         self,
@@ -94,12 +94,12 @@ class Experiment:
         if config_path is None:
             config_path = (
                 Path(__file__).parent
-                / "experiment_config.yaml"
+                / "evaluation_config.yaml"
             )
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
-        exp = self.config["experiment"]
+        exp = self.config["evaluation"]
         data_cfg = self.config.get("data", {})
 
         if tasks:
@@ -154,14 +154,14 @@ class Experiment:
         self.n_q_heads = mcfg["num_q_heads"]
 
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        self.name = name or "exp"
+        self.name = name or "eval"
         self.out_dir = (
             results_dir / f"{self.name}_{ts}"
         )
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self, algo_names: List[str]):
-        """Run experiment across all tasks."""
+        """Run evaluation across all tasks."""
         t0 = time.time()
         rng = np.random.default_rng(self.seed)
 
@@ -179,13 +179,13 @@ class Experiment:
         )
         methods = idealized + algorithms
 
-        # --- Log experiment plan ---
+        # --- Log evaluation plan ---
         phase, _, _ = self._resolve_heads(
             self.tasks[0]
         )
         n_heads = self._count_heads()
         log.info(
-            "Experiment: %d tasks, %s mode, "
+            "Evaluation: %d tasks, %s mode, "
             "%d examples/task, %d queries/example",
             len(self.tasks), self.head_mode,
             self.n_examples, self.n_queries,
@@ -509,7 +509,7 @@ class Experiment:
             avg = int(np.mean(seq_lens))
             seq_desc = f"avg {avg:,} tok"
 
-        plot_experiment(
+        plot_evaluation(
             agg, task_dir,
             self.config.get("plotting", {}),
             self.budgets, families,
@@ -794,12 +794,13 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="Run attention approximation "
-        "experiments.",
+        "evaluations.",
     )
     parser.add_argument(
-        "--algorithms", nargs="+", required=True,
+        "--algorithms", nargs="*", default=[],
         choices=algo_choices,
-        help="Algorithms to evaluate.",
+        help="Algorithms to evaluate (omit for "
+        "idealized methods only).",
     )
     parser.add_argument(
         "--tasks", nargs="+", default=None,
@@ -808,7 +809,7 @@ def main():
     )
     parser.add_argument(
         "--name", default=None,
-        help="Experiment name (auto-generated "
+        help="Evaluation name (auto-generated "
         "if omitted).",
     )
     parser.add_argument(
@@ -817,12 +818,12 @@ def main():
     )
     parser.add_argument(
         "--config", default=None,
-        help="Path to experiment_config.yaml.",
+        help="Path to evaluation_config.yaml.",
     )
 
     args = parser.parse_args()
 
-    exp = Experiment(
+    exp = Evaluation(
         tasks=args.tasks,
         name=args.name,
         vectors_dir=args.vectors_dir,

@@ -17,7 +17,7 @@ import yaml
 from datetime import datetime
 from pathlib import Path
 
-from ..experiment.data_loader import (
+from ..evaluation.data_loader import (
     load_examples, load_task_metadata,
 )
 from .dashboard_global import (

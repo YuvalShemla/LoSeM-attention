@@ -3,7 +3,7 @@ End-to-end smoke test on synthetic .pt data.
 
 Creates temporary .pt files mimicking the extraction
 pipeline output, writes a minimal config, then runs
-the experiment runner and verifies results.
+the evaluation runner and verifies results.
 """
 
 import json
@@ -96,7 +96,7 @@ def _write_test_config(tmpdir, vdir):
             ),
         },
         "tasks": ["test_task"],
-        "experiment": {
+        "evaluation": {
             "seed": 42,
             "n_queries": 5,
             "n_examples": 1,
@@ -128,13 +128,13 @@ def _write_test_config(tmpdir, vdir):
 
 
 def test_smoke_run():
-    """Full experiment pipeline on synthetic .pt data."""
+    """Full evaluation pipeline on synthetic .pt data."""
     try:
         import torch
     except ImportError:
         pytest.skip("torch not installed")
 
-    from src.experiment.run_experiment import Experiment
+    from src.evaluation.run_evaluation import Evaluation
 
     with tempfile.TemporaryDirectory() as tmpdir:
         vdir = Path(tmpdir) / "vectors"
@@ -143,7 +143,7 @@ def test_smoke_run():
         )
         cfg_path = _write_test_config(tmpdir, vdir)
 
-        exp = Experiment(
+        exp = Evaluation(
             config_path=cfg_path,
             name="test",
         )

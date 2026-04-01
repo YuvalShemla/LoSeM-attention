@@ -15,7 +15,7 @@ from matplotlib.gridspec import GridSpec
 from pathlib import Path
 from typing import Dict, List
 
-from ..experiment.plotting import setup_style, save_figure
+from ..evaluation.plotting import setup_style, save_figure
 
 from .attention_concentration import compute_concentration_data
 from .entropy_distribution import compute_entropy_data

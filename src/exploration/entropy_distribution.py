@@ -17,7 +17,7 @@ from typing import Dict, List
 from ..core import (
     softmax, entropy_nats, nonlocal_mask,
 )
-from ..experiment.plotting import (
+from ..evaluation.plotting import (
     setup_style, save_figure,
 )
 

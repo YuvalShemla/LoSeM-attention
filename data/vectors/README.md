@@ -89,7 +89,7 @@ V = tensors["V_kvhead3"].float().numpy()
 
 Or use the data loader:
 ```python
-from src.experiment.data_loader import load_examples
+from src.evaluation.data_loader import load_examples
 for ex in load_examples(
     "data/vectors", "math_calc",
     layer=26, head=12, kv_head=3,

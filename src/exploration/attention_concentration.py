@@ -17,7 +17,7 @@ from ..core import (
     softmax, top_k_mass, nonlocal_mask,
     concentration_curve,
 )
-from ..experiment.plotting import (
+from ..evaluation.plotting import (
     setup_style, save_figure,
 )
 

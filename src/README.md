@@ -10,9 +10,9 @@ src/
 │   ├── idealized_methods.py  # IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits
 │   ├── multiq_grouping.py
 │   └── kmeans_clustering.py
-├── experiment/         # Experiment infrastructure
-│   ├── experiment_config.yaml  # Experiment settings
-│   ├── run_experiment.py  # Experiment class + CLI
+├── evaluation/         # Evaluation infrastructure
+│   ├── evaluation_config.yaml  # Evaluation settings
+│   ├── run_evaluation.py  # Evaluation class + CLI
 │   ├── data_loader.py  # .pt file loading
 │   ├── evaluator.py    # Per-query evaluation
 │   └── plotting.py     # Publication-quality plots
@@ -38,19 +38,19 @@ src/
 ```
 core.py  ←── shared by everything below
 
-python -m src.experiment.run_experiment
-  └── experiment/run_experiment.py
+python -m src.evaluation.run_evaluation
+  └── evaluation/run_evaluation.py
         ├── algorithms/__init__.py (METHOD_REGISTRY)
         │     ├── idealized_methods.py
         │     ├── multiq_grouping.py
         │     └── kmeans_clustering.py
         │           └── base.py
-        ├── experiment/data_loader.py (.pt loading)
-        ├── experiment/evaluator.py
-        └── experiment/plotting.py
+        ├── evaluation/data_loader.py (.pt loading)
+        ├── evaluation/evaluator.py
+        └── evaluation/plotting.py
 
 exploration/run_exploration.py
-  ├── experiment/data_loader.py
+  ├── evaluation/data_loader.py
   ├── exploration/attention_concentration.py
   ├── exploration/entropy_distribution.py
   ├── exploration/kv_norm_correlation.py

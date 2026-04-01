@@ -3,7 +3,7 @@ Core attention primitives (softmax, full/subset attention),
 error metrics, grouping helpers, KMeans, and attention
 statistics (entropy, concentration, norms).
 
-Imported by algorithms/, experiment/, and exploration/.
+Imported by algorithms/, evaluation/, and exploration/.
 """
 
 import numpy as np

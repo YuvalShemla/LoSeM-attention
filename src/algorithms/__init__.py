@@ -2,7 +2,7 @@
 Algorithm registry.
 
 Idealized methods are distinguished by kind='idealized'
-and are auto-included in every experiment. Algorithms
+and are auto-included in every evaluation. Algorithms
 must be explicitly requested.
 """
 

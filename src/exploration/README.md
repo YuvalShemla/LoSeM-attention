@@ -1,7 +1,7 @@
 # Exploration
 
 Data analysis scripts for understanding attention
-patterns before running approximation experiments.
+patterns before running approximation evaluations.
 
 ## Dashboards
 

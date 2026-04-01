@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from ..core import softmax
-from ..experiment.plotting import (
+from ..evaluation.plotting import (
     setup_style, save_figure,
 )
 

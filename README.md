@@ -12,8 +12,8 @@ pip install -r requirements.txt
 # Extract attention vectors (GPU required)
 python -m src.extraction.extract_vectors
 
-# Run an experiment
-python -m src.experiment.run_experiment \
+# Run an evaluation
+python -m src.evaluation.run_evaluation \
   --algorithms multiq kmeans \
   --tasks math_calc code_run \
   --name grouping_comparison_v1
@@ -33,9 +33,9 @@ local-attention/
 │   │   ├── idealized_methods.py  # IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits
 │   │   ├── multiq_grouping.py
 │   │   └── kmeans_clustering.py
-│   ├── experiment/         # Runner, plotting, data loading
-│   │   ├── experiment_config.yaml
-│   │   ├── run_experiment.py
+│   ├── evaluation/         # Runner, plotting, data loading
+│   │   ├── evaluation_config.yaml
+│   │   ├── run_evaluation.py
 │   │   ├── plotting.py
 │   │   ├── data_loader.py
 │   │   └── evaluator.py
@@ -60,7 +60,7 @@ local-attention/
 │   └── vectors/            # .pt attention vectors (flat: vectors/{task}/)
 ├── tests/                  # Minimal test suite
 ├── docs/methods.md         # Algorithms in math notation
-└── results/                # Experiment outputs
+└── results/                # Evaluation outputs
 ```
 
 ## Adding a New Algorithm
@@ -70,9 +70,9 @@ local-attention/
 3. Implement `name`, `run()`, and optionally
    `prepare()` and `expand_from_config()`
 4. Register in `src/algorithms/__init__.py`
-5. Add config to `src/experiment/experiment_config.yaml`
+5. Add config to `src/evaluation/evaluation_config.yaml`
    under `algorithm_configs`
-6. Run: `python -m src.experiment.run_experiment --algorithms my_method`
+6. Run: `python -m src.evaluation.run_evaluation --algorithms my_method`
 
 ## Data Format
 
@@ -89,7 +89,7 @@ Only layers containing selected heads are saved. See `data/vectors/README.md` fo
 
 ## Idealized Methods
 
-Always auto-included in every experiment for comparison:
+Always auto-included in every evaluation for comparison:
 - **IdealTopK**: select top-B keys by logit (biased)
 - **IdealSampling**: sample from true attention weights
 - **IdealEqualSplits**: equal-sized groups on sorted keys
@@ -100,7 +100,7 @@ Always auto-included in every experiment for comparison:
 
 Each module has its own config file:
 - `src/extraction/extraction_config.yaml` — model, tasks, extraction phases
-- `src/experiment/experiment_config.yaml` — experiment scope, budgets, algorithms, plotting
+- `src/evaluation/evaluation_config.yaml` — evaluation scope, budgets, algorithms, plotting
 - `src/exploration/exploration_config.yaml` — exploration plots, per-plot settings
 
 ## Tests

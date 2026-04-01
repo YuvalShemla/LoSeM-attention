@@ -1,6 +1,6 @@
 # Data Extraction
 
-Extracts Q, K, V attention vectors from Llama 3.1 8B for use in attention approximation experiments.
+Extracts Q, K, V attention vectors from Llama 3.1 8B for use in attention approximation evaluations.
 
 ## What We Extract
 
@@ -77,7 +77,7 @@ extraction:
 
 - **`examples_per_task`** — examples are sorted shortest-first. The scout pass always uses the first (shortest) example; the vectors pass extracts this many.
 - **`layers`** — `"all"` extracts all 32 layers. Use a list like `[0, 17, 31]` to save disk/time.
-- **`store_raw_vectors` / `store_rope_vectors`** — set either to `false` to halve storage. Experiments use RoPE vectors; exploration scripts sometimes use raw vectors.
+- **`store_raw_vectors` / `store_rope_vectors`** — set either to `false` to halve storage. Evaluations use RoPE vectors; exploration scripts sometimes use raw vectors.
 
 ### Head selection
 

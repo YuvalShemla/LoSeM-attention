@@ -1,5 +1,5 @@
 """
-Data loading for attention experiments (.pt format).
+Data loading for attention evaluations (.pt format).
 
 Loads per-layer bfloat16 .pt files from the extraction
 pipeline. Returns standardized dicts per example.
@@ -131,7 +131,7 @@ def load_examples(
     Iterate examples for a task/layer/head combo.
 
     Yields dicts with Q, K, V, example_id, task,
-    layer, head — compatible with the experiment runner.
+    layer, head — compatible with the evaluation runner.
     phase=None uses flat layout with fallback.
     """
     ex_dirs = discover_examples(

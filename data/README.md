@@ -1,6 +1,6 @@
 # Data
 
-Extracted attention vectors for experiments.
+Extracted attention vectors for evaluations.
 
 ## Directory Structure
 
@@ -50,7 +50,7 @@ Each `.pt` contains a dict of tensors for the selected heads at that layer:
 ## Loading
 
 ```python
-from src.experiment.data_loader import load_examples
+from src.evaluation.data_loader import load_examples
 
 for ex in load_examples(
     Path("data/vectors"),

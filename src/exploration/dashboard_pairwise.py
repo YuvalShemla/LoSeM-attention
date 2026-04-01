@@ -16,7 +16,7 @@ from matplotlib.gridspec import GridSpec
 from pathlib import Path
 from typing import Dict, List
 
-from ..experiment.plotting import setup_style, save_figure
+from ..evaluation.plotting import setup_style, save_figure
 
 from .pairwise_similarity import compute_pairwise_data
 

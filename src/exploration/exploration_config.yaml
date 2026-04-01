@@ -5,7 +5,7 @@
 # Controls the data analysis / exploration pipeline.
 # Exploration computes attention statistics and
 # diagnostic plots to understand the attention
-# landscape before running experiments.
+# landscape before running evaluations.
 
 # ── Model ──
 model:
