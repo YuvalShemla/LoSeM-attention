@@ -14,7 +14,7 @@ python -m src.extraction.extract_vectors
 
 # Run an experiment
 python -m src.experiment.run_experiment \
-  --algorithms meanq kmeans \
+  --algorithms multiq kmeans \
   --tasks math_calc code_run \
   --name grouping_comparison_v1
 
@@ -31,7 +31,6 @@ local-attention/
 │   ├── algorithms/         # Algorithm implementations
 │   │   ├── base.py         # ABC + dataclasses
 │   │   ├── idealized_methods.py  # IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits
-│   │   ├── meanq_grouping.py
 │   │   ├── multiq_grouping.py
 │   │   └── kmeans_clustering.py
 │   ├── experiment/         # Runner, plotting, data loading

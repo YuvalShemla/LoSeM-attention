@@ -8,7 +8,6 @@ src/
 ├── algorithms/         # Attention approximation methods
 │   ├── base.py         # ABC + dataclasses
 │   ├── idealized_methods.py  # IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits
-│   ├── meanq_grouping.py
 │   ├── multiq_grouping.py
 │   └── kmeans_clustering.py
 ├── experiment/         # Experiment infrastructure
@@ -43,7 +42,6 @@ python -m src.experiment.run_experiment
   └── experiment/run_experiment.py
         ├── algorithms/__init__.py (METHOD_REGISTRY)
         │     ├── idealized_methods.py
-        │     ├── meanq_grouping.py
         │     ├── multiq_grouping.py
         │     └── kmeans_clustering.py
         │           └── base.py

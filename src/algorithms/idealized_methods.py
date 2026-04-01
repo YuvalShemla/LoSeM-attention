@@ -281,9 +281,7 @@ class IdealEqualWeightSplits(AttentionAlgorithm):
     get more groups (finer resolution where it matters).
 
     Budget scales with the number of groups (= budget
-    parameter). This is a smarter per-query grouping
-    strategy that allocates groups proportional to
-    attention mass.
+    parameter).
     """
 
     @property

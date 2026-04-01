@@ -23,8 +23,7 @@ class AttentionAlgorithm(ABC):
 | `base.py` | ABC, AttentionInput/Output dataclasses |
 | `../core.py` | softmax, rel_l2, hybrid_attention, equal groups |
 | `idealized_methods.py` | IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits |
-| `meanq_grouping.py` | MeanQ: sort by mean-query projection |
-| `multiq_grouping.py` | MultiQ: KMeans on queries, per-centroid ordering |
+| `multiq_grouping.py` | MultiQ: KMeans on queries, per-centroid key ordering (C=1 gives single mean-query sort) |
 | `kmeans_clustering.py` | KMeans on keys, per-query cluster scoring |
 | `__init__.py` | METHOD_REGISTRY |
 

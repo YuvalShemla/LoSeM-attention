@@ -124,36 +124,28 @@ and approximated keys/groups.
 
 ## Our Methods
 
-### MeanQ Grouping
-
-1. Compute mean query: q_bar = (1/M) sum_j q_j
-   over M evaluation positions
-2. Sort all N keys by q_bar^T k_i / sqrt(d) (offline)
-3. Partition sorted keys into G equal groups
-4. Per query: score groups by
-   q^T avg_key_g / sqrt(d) + log(count_g)
-5. Apply TopK or Hybrid mode
-
-**Cost:** Offline O(N log N) sort. Per-query O(G).
-
-
 ### MultiQ Grouping
 
-Instead of a single MeanQ, find multiple queries to use for initial sorting.
+Cluster all query vectors to discover representative
+"prototype queries", then pre-sort keys for each
+prototype. At inference time, route each query to its
+nearest prototype and use that prototype's pre-sorted
+key ordering.
 
-Current implementation:
-1. Run KMeans on all query vectors -> C centroids
-2. For each centroid c_j: sort keys by
-   c_j^T k_i / sqrt(d), partition into G groups
+1. Run KMeans on **all** query vectors (entire sequence)
+   -> C centroids (prototype queries)
+2. For each centroid c_j: sort all N keys by
+   c_j^T k_i / sqrt(d), partition into G equal groups
 3. Per query: route to nearest centroid
    (argmax c_j^T q), use that centroid's grouping
 4. Apply TopK or Hybrid mode
 
 **Cost:** Offline O(C * N log N). Per-query O(C + G).
-Can benefit from partially sorted arrays (faster).
 
-Advantage over MeanQ: adapts to query diversity. Different
-query clusters get different key orderings.
+Setting C=1 reduces to sorting keys by the mean query
+(a single global ordering). Higher C adapts to query
+diversity — different query clusters get different key
+orderings optimized for their attention pattern.
 
 
 ### KMeans Clustering
