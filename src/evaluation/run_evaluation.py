@@ -66,10 +66,20 @@ def build_algorithm_plot_families(algorithms, config: dict):
         pfx = re.sub(
             r"-(topk|hybrid)-k\d+$", "", m.name,
         )
+        # Also strip trailing -{digits} so that e.g.
+        # "Foo-33" and "Foo-129" share family "Foo".
+        if not m.sweeps_budget:
+            pfx = re.sub(r"-\d+$", "", pfx)
         if pfx in seen:
             continue
         seen[pfx] = True
-        c = color_map.get(algo_name, {})
+        # Check for prefix-specific color key first
+        # (e.g. "lsh_crosspoly_cc" for a variant),
+        # then fall back to the registry name.
+        pfx_key = pfx.lower().replace("-", "_")
+        c = color_map.get(
+            pfx_key, color_map.get(algo_name, {}),
+        )
         tk_sweep = config.get(
             "algorithm_configs", {}
         ).get(algo_name, {}).get(

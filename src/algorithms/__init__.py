@@ -16,7 +16,8 @@ from .idealized_methods import (
 )
 from .multiq_grouping import MultiQGrouping
 from .kmeans_clustering import KMeansClustering
-from .lsh_crosspoly import LSHCrossPolytope
+from .lsh_crosspoly_multiprobe import LSHCrossPolytope
+from .lsh_crosspoly_clustered import LSHCrossPolytopeClustered
 
 
 @dataclass
@@ -46,5 +47,8 @@ METHOD_REGISTRY = {
     ),
     "lsh_crosspoly": MethodSpec(
         LSHCrossPolytope, "algorithm",
+    ),
+    "lsh_crosspoly_clustered": MethodSpec(
+        LSHCrossPolytopeClustered, "algorithm",
     ),
 }

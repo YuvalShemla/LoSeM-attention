@@ -56,21 +56,33 @@ def _cp_vertex_scores(z: np.ndarray) -> np.ndarray:
 
 
 def _bucket_means(keys, values, labels, n_buckets):
-    """Vectorized per-bucket mean keys/values via np.add.at."""
+    """Per-bucket mean keys/values via np.bincount (fast)."""
+    lab = labels.astype(np.intp)
     d_k = keys.shape[1]
     d_v = values.shape[1]
     counts = np.bincount(
-        labels.astype(np.intp), minlength=n_buckets,
+        lab, minlength=n_buckets,
     ).astype(np.int32)[:n_buckets]
 
-    sum_k = np.zeros((n_buckets, d_k), dtype=np.float64)
-    sum_v = np.zeros((n_buckets, d_v), dtype=np.float64)
-    np.add.at(sum_k, labels, keys.astype(np.float64))
-    np.add.at(sum_v, labels, values.astype(np.float64))
+    sum_k = np.empty((n_buckets, d_k), dtype=np.float64)
+    for j in range(d_k):
+        sum_k[:, j] = np.bincount(
+            lab, weights=keys[:, j].astype(np.float64),
+            minlength=n_buckets,
+        )[:n_buckets]
+
+    sum_v = np.empty((n_buckets, d_v), dtype=np.float64)
+    for j in range(d_v):
+        sum_v[:, j] = np.bincount(
+            lab, weights=values[:, j].astype(np.float64),
+            minlength=n_buckets,
+        )[:n_buckets]
 
     nonempty = counts > 0
     sum_k[nonempty] /= counts[nonempty, np.newaxis]
     sum_v[nonempty] /= counts[nonempty, np.newaxis]
+    sum_k[~nonempty] = 0.0
+    sum_v[~nonempty] = 0.0
 
     return (
         sum_k.astype(np.float32),
@@ -86,8 +98,12 @@ class LSHCrossPolytope(AttentionAlgorithm):
     Multi-probe query ordering with importance-weighted softmax.
     """
 
-    def __init__(self, name_suffix: str = ""):
+    def __init__(
+        self, name_suffix: str = "",
+        count_corrected: bool = False,
+    ):
         self._name_suffix = name_suffix
+        self._count_corrected = count_corrected
         self._avg_keys = None
         self._avg_values = None
         self._counts = None
@@ -99,7 +115,7 @@ class LSHCrossPolytope(AttentionAlgorithm):
 
     @property
     def name(self) -> str:
-        base = "LSH-CrossPoly"
+        base = "LSH-CrossPoly-Multiprobe"
         if self._name_suffix:
             return f"{base}-{self._name_suffix}"
         return base
@@ -272,8 +288,15 @@ class LSHCrossPolytope(AttentionAlgorithm):
             scores = (
                 (mk @ q).astype(np.float64) / sqrt_d
             )
-            # w_b proportional to exp(score_b - log(pi_b))
             adjusted = scores - log_pi
+            if self._count_corrected:
+                # Count-corrected: α_b ∝ n_b · exp(s_b),
+                # i.e. softmax(s_b + log(n_b)).
+                log_n = np.log(np.maximum(
+                    counts[all_idx].astype(np.float64),
+                    1.0,
+                ))
+                adjusted = adjusted + log_n
             w = softmax(adjusted).astype(np.float32)
             output = w @ mv
 
@@ -284,4 +307,9 @@ class LSHCrossPolytope(AttentionAlgorithm):
 
     @staticmethod
     def expand_from_config(cfg: dict) -> list:
-        return [LSHCrossPolytope()]
+        return [
+            LSHCrossPolytope(
+                name_suffix="count-corrected",
+                count_corrected=True,
+            ),
+        ]

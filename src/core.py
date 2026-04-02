@@ -303,12 +303,9 @@ def compute_special_indices(
     special_idx = np.unique(
         np.concatenate([sink, local])
     ).astype(np.int64)
-    special_set = set(special_idx.tolist())
-    candidate_idx = np.array(
-        [i for i in range(n_causal)
-         if i not in special_set],
-        dtype=np.int64,
-    )
+    mask = np.ones(n_causal, dtype=bool)
+    mask[special_idx] = False
+    candidate_idx = np.where(mask)[0].astype(np.int64)
     return special_idx, candidate_idx
 
 
