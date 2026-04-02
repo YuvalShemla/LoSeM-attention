@@ -10,6 +10,10 @@ Usage:
     --algorithms multiq kmeans \\
     --tasks math_calc code_run \\
     --name grouping_comparison_v1
+
+  # Regenerate plots only (needs prior run with spec.json):
+  python -m src.evaluation.run_evaluation \\
+    --plots-only --from-dir results/my_run_2024-01-01_12-00
 """
 
 import argparse
@@ -40,6 +44,180 @@ from .plotting import (
 )
 
 log = logging.getLogger("evaluation")
+
+
+def build_algorithm_plot_families(algorithms, config: dict):
+    """
+    Plot family specs (prefix, colors, top_k sweep) for algorithm
+    instances. Used by Evaluation and by replay_plots.
+    """
+    import re
+    color_map = config.get("plotting", {}).get(
+        "algorithm_colors", {}
+    )
+    seen = {}
+    families = []
+    for m in algorithms:
+        algo_name = None
+        for aname, spec in METHOD_REGISTRY.items():
+            if isinstance(m, spec.cls):
+                algo_name = aname
+                break
+        pfx = re.sub(
+            r"-(topk|hybrid)-k\d+$", "", m.name,
+        )
+        if pfx in seen:
+            continue
+        seen[pfx] = True
+        c = color_map.get(algo_name, {})
+        tk_sweep = config.get(
+            "algorithm_configs", {}
+        ).get(algo_name, {}).get(
+            "top_k_sweep", [0, 1, 3, 5, 10]
+        )
+        families.append({
+            "prefix": pfx,
+            "label": pfx.replace("-", " "),
+            "color_topk": c.get("topk", "#888"),
+            "color_hybrid": c.get(
+                "hybrid", "#444"
+            ),
+            "marker": c.get("marker", "o"),
+            "top_k_sweep": tk_sweep,
+        })
+    return families
+
+
+def replay_plots(results_dir: Path) -> None:
+    """
+    Regenerate PNGs from a previous run using spec.json and saved
+    aggregated_stats (no vector data or method re-execution).
+    """
+    results_dir = Path(results_dir).resolve()
+    spec_path = results_dir / "spec.json"
+    if not spec_path.is_file():
+        raise FileNotFoundError(
+            f"Missing {spec_path} — need a completed "
+            f"evaluation directory."
+        )
+    with open(spec_path) as f:
+        spec = json.load(f)
+    config = spec.get("resolved_config")
+    if not config:
+        raise ValueError(
+            "spec.json has no resolved_config; cannot "
+            "replay plots."
+        )
+    algo_names = spec.get("algorithms", [])
+    algo_cfgs = config.get("algorithm_configs", {})
+    algorithms = _resolve_methods(algo_names, algo_cfgs)
+    families = build_algorithm_plot_families(
+        algorithms, config,
+    )
+    plotting = config.get("plotting", {})
+    budgets = config["evaluation"]["budget_sweep"][
+        "absolute"
+    ]
+    tasks = spec.get("tasks", [])
+    task_details = spec.get("task_details", {})
+
+    per_task_agg = {}
+    task_seq_info = {}
+
+    for task in tasks:
+        task_dir = results_dir / "per_task" / task
+        agg_path = task_dir / "aggregated_stats.json"
+        if not agg_path.is_file():
+            log.warning(
+                "Skip task %s: no %s",
+                task, agg_path,
+            )
+            continue
+        with open(agg_path) as f:
+            agg = json.load(f)
+
+        per_task_agg[task] = agg
+
+        ds_path = task_dir / "data_statistics.json"
+        n_queries = 0
+        if ds_path.is_file():
+            with open(ds_path) as f:
+                ds = json.load(f)
+                n_queries = int(ds.get("n_queries", 0))
+
+        td = task_details.get(task, {})
+        seq_lens = td.get("seq_lens", [])
+        if len(seq_lens) == 1:
+            seq_desc = f"{seq_lens[0]:,} tok"
+        elif seq_lens:
+            avg = int(np.mean(seq_lens))
+            seq_desc = f"avg {avg:,} tok"
+        else:
+            seq_desc = ""
+        if seq_lens:
+            u = sorted(set(seq_lens))
+            if len(u) == 1:
+                task_seq_info[task] = f"{u[0]:,} tok"
+            else:
+                task_seq_info[task] = (
+                    f"avg {int(np.mean(seq_lens)):,} tok"
+                )
+
+        plot_title = (
+            f"{task} — {seq_desc}" if seq_desc else task
+        )
+        plot_evaluation(
+            agg, task_dir, plotting, budgets,
+            families,
+            title=plot_title,
+            n_queries=n_queries,
+        )
+
+        per_head_dir = task_dir / "per_head"
+        if per_head_dir.is_dir():
+            head_files = sorted(
+                per_head_dir.glob("*.json"),
+            )
+            per_head_aggs = {}
+            for idx, hp in enumerate(head_files):
+                with open(hp) as f:
+                    d = json.load(f)
+                per_head_aggs[idx] = {
+                    "agg": d["aggregated_stats"],
+                    "layer": d["layer"],
+                    "q_head": d["q_head"],
+                    "kv_head": d["kv_head"],
+                    "selection_label": d.get(
+                        "selection_label", "",
+                    ),
+                    "effective_entropy": d.get(
+                        "effective_entropy",
+                    ),
+                    "n_queries": d.get("n_queries", 0),
+                }
+            if len(per_head_aggs) > 1:
+                plot_per_head_comparison(
+                    per_head_aggs, task_dir,
+                    plotting, budgets, families,
+                    task_name=task,
+                    seq_desc=seq_desc,
+                )
+
+    if per_task_agg:
+        ov_dir = results_dir / "overview"
+        ov_dir.mkdir(parents=True, exist_ok=True)
+        plot_overview(
+            per_task_agg, ov_dir, plotting,
+            budgets, families,
+            task_seq_info=task_seq_info,
+        )
+        with open(ov_dir / "cross_task_stats.json", "w") as f:
+            json.dump(per_task_agg, f, indent=2)
+
+    log.info(
+        "Replayed plots into %s",
+        results_dir,
+    )
 
 
 def _resolve_methods(algo_names, algo_configs):
@@ -241,7 +419,9 @@ class Evaluation:
         )
 
         if per_task_agg:
-            families = self._build_families(algorithms)
+            families = build_algorithm_plot_families(
+                algorithms, self.config,
+            )
             ov_dir = self.out_dir / "overview"
             ov_dir.mkdir(exist_ok=True)
             task_seq_info = {}
@@ -443,7 +623,9 @@ class Evaluation:
         n_total = len(all_results)
         task_elapsed = time.time() - task_t0
 
-        families = self._build_families(algorithms)
+        families = build_algorithm_plot_families(
+            algorithms, self.config,
+        )
 
         # Per-head aggregation and plots
         per_head_dir = task_dir / "per_head"
@@ -705,46 +887,6 @@ class Evaluation:
                 return phase
         return None
 
-    # ── Plot families ───────────────────────────────
-
-    def _build_families(self, algorithms):
-        """Build plot family specs from algorithms."""
-        import re
-        color_map = self.config.get("plotting", {}).get(
-            "algorithm_colors", {}
-        )
-        seen = {}
-        families = []
-        for m in algorithms:
-            algo_name = None
-            for aname, spec in METHOD_REGISTRY.items():
-                if isinstance(m, spec.cls):
-                    algo_name = aname
-                    break
-            pfx = re.sub(
-                r"-(topk|hybrid)-k\d+$", "", m.name,
-            )
-            if pfx in seen:
-                continue
-            seen[pfx] = True
-            c = color_map.get(algo_name, {})
-            tk_sweep = self.config.get(
-                "algorithm_configs", {}
-            ).get(algo_name, {}).get(
-                "top_k_sweep", [0, 1, 3, 5, 10]
-            )
-            families.append({
-                "prefix": pfx,
-                "label": pfx.replace("-", " "),
-                "color_topk": c.get("topk", "#888"),
-                "color_hybrid": c.get(
-                    "hybrid", "#444"
-                ),
-                "marker": c.get("marker", "o"),
-                "top_k_sweep": tk_sweep,
-            })
-        return families
-
     # ── Save helpers ────────────────────────────────
 
     def _save_spec(self, methods, algo_names,
@@ -820,8 +962,30 @@ def main():
         "--config", default=None,
         help="Path to evaluation_config.yaml.",
     )
+    parser.add_argument(
+        "--plots-only",
+        action="store_true",
+        help="Regenerate PNGs from an existing run "
+        "(requires --from-dir). No experiments.",
+    )
+    parser.add_argument(
+        "--from-dir",
+        default=None,
+        help="Results directory containing spec.json "
+        "(used with --plots-only).",
+    )
 
     args = parser.parse_args()
+
+    if args.plots_only:
+        if not args.from_dir:
+            parser.error(
+                "--plots-only requires --from-dir "
+                "POINTING_TO_results/run_folder",
+            )
+        _setup_logging()
+        replay_plots(Path(args.from_dir))
+        return
 
     exp = Evaluation(
         tasks=args.tasks,

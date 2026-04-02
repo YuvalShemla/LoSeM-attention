@@ -22,6 +22,10 @@ build/
 *.jsonl
 *.npz
 *.npy
+data/vectors
+data/benchmarks
+data/head_statistics
+
 
 # Vectors – only keep the README
 data/vectors/*

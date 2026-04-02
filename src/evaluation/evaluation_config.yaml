@@ -116,6 +116,7 @@ algorithm_configs:
     n_clusters: 256
     modes: ["topk", "hybrid"]
     top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
+  lsh_crosspoly: {}
 
 # ── Plot Settings ──
 plotting:
@@ -142,6 +143,10 @@ plotting:
       topk: "#7fbfff"
       hybrid: "#1f77b4"
       marker: "X"
+    lsh_crosspoly:
+      topk: "#17becf"
+      hybrid: "#17becf"
+      marker: "h"
 
 
 # ══════════════════════════════════════════════════════

@@ -204,6 +204,52 @@ def plot_algorithm_family(
                     textcoords="offset points",
                 )
 
+    # Fallback for algorithms that don't use topk/hybrid naming.
+    # Handles both budget-sweep keys ({prefix}-{int}) and
+    # single-point keys ({prefix} exactly).
+    if not x_tk and not x_hy:
+        import re
+        pat = re.compile(
+            rf"^{re.escape(prefix)}-(\d+)$",
+        )
+        bx, by, bs = [], [], []
+        for k in sorted(
+            agg.keys(),
+            key=lambda k: agg[k].get(
+                "budget_mean", 0,
+            ),
+        ):
+            if pat.match(k):
+                e = agg[k]
+                bx.append(e["budget_mean"])
+                by.append(e["error_mean"])
+                bs.append(e.get("error_std", 0))
+        if bx:
+            _plot_with_error_band(
+                ax, bx, by,
+                bs if show_bands else None,
+                color=color_hybrid,
+                marker=marker, ls="-",
+                lw=2.5, ms=7, alpha=0.9,
+                zorder=5, label=label,
+            )
+        elif prefix in agg:
+            e = agg[prefix]
+            bm = e["budget_mean"]
+            em = e["error_mean"]
+            es = e.get("error_std", 0)
+            yerr = (
+                [es] if show_bands and es > 0
+                else None
+            )
+            ax.errorbar(
+                [bm], [em], yerr=yerr,
+                color=color_hybrid,
+                marker=marker, ls="none",
+                capsize=4, lw=2.0, ms=9,
+                zorder=6, label=label,
+            )
+
 
 def plot_evaluation(
     agg: Dict,

@@ -159,3 +159,58 @@ orderings optimized for their attention pattern.
 5. Apply TopK or Hybrid mode
 
 **Cost:** Offline O(N * C * n_iter). Per-query O(C).
+
+
+### LSH Cross-Polytope
+
+Locality-sensitive style bucketing with **two independent**
+cross-polytope hashes, **multi-probe** ordering at query time,
+and **importance-weighted** softmax over bucket representatives.
+
+**Offline (once per sequence in `prepare`):**
+
+1. Subtract the global mean of keys (same mean for all positions).
+2. Draw two i.i.d. random orthogonal maps `R1`, `R2` (QR on
+   Gaussian noise, fixed seed).
+3. For each key row `x`, form `z1 = R1 x`, `z2 = R2 x`.
+4. **Cross-polytope hash:** for each `z`, take the coordinate
+   with largest magnitude, record its sign → one of `2d` buckets
+   per hash (standard CP region).
+5. Combine the two hashes into a **pair** `(b1, b2)` with linear
+   index `b1 * (2d) + b2`, giving **(2d)^2** buckets. The
+   **sink** (position 0) is **always** a separate bucket, so there
+   are **1 + (2d)^2** buckets total.
+6. For each nonempty bucket, store **mean key** and **mean value**
+   over keys that fell there.
+
+**Query (`run`, budget = B):**
+
+1. Center the query with the **same** key mean; compute
+   `z1_q = R1 x`, `z2_q = R2 x`.
+2. **Collision probabilities** under each hash: softmax over the
+   `2d` vertex scores `±z_j` (one score per cross-polytope vertex).
+   For a combined bucket `(b1, b2)`, use
+   `π(b1, b2) = π1[b1] · π2[b2]`.
+3. **Multi-probe order:** among buckets that actually contain keys,
+   sort by `π(b1, b2)` **descending** (most likely CP regions first).
+   Always include the sink first if present; then take up to `B`
+   buckets total (sink + CP probes), capped by the number of
+   nonempty buckets.
+4. **Scores** on probed buckets: `q^T mu_k / sqrt(d)` where `mu_k`
+   is the bucket mean key.
+5. **Unbiased-style weights:** normalize with an importance
+   correction. Let `score_b` be the logit above and `π_b` the
+   collision probability for bucket `b` (for the sink, `π = 1`).
+   Use weights proportional to `exp(score_b - log π_b)` and
+   softmax over probed buckets only, then combine bucket mean
+   values. Dividing by `π_b` compensates for probing high-`π`
+   buckets preferentially.
+
+**Evaluation:** `sweeps_budget` is true — the runner varies `B`
+like other budget-swept methods. Bucketing is computed on the full
+key matrix passed to `prepare` (not recomputed per causal prefix in
+the current implementation).
+
+**Cost:** Offline O(N) hashing plus O((2d)^2) bucket storage.
+Per-query O(B) after sorting nonempty buckets by `π` (dominated by
+the number of nonempty buckets in practice).
