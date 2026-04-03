@@ -55,8 +55,17 @@ def _cp_vertex_scores(z: np.ndarray) -> np.ndarray:
     return s
 
 
-def _bucket_means(keys, values, labels, n_buckets):
-    """Vectorized per-bucket mean keys/values via np.add.at."""
+def _bucket_stats(
+    keys, values, labels, corr, n_buckets,
+):
+    """
+    Per-bucket stats with query-mean correction.
+
+    - avg_keys[b] = mean of raw keys in bucket b
+    - avg_values[b] = corr-weighted mean value in bucket b
+    - corr_mass[b] = sum_i corr_i in bucket b
+    - counts[b] = number of keys in bucket b
+    """
     d_k = keys.shape[1]
     d_v = values.shape[1]
     counts = np.bincount(
@@ -64,17 +73,26 @@ def _bucket_means(keys, values, labels, n_buckets):
     ).astype(np.int32)[:n_buckets]
 
     sum_k = np.zeros((n_buckets, d_k), dtype=np.float64)
-    sum_v = np.zeros((n_buckets, d_v), dtype=np.float64)
+    sum_v_corr = np.zeros((n_buckets, d_v), dtype=np.float64)
+    corr_mass = np.zeros(n_buckets, dtype=np.float64)
     np.add.at(sum_k, labels, keys.astype(np.float64))
-    np.add.at(sum_v, labels, values.astype(np.float64))
+    np.add.at(
+        sum_v_corr, labels,
+        values.astype(np.float64) * corr[:, None],
+    )
+    np.add.at(corr_mass, labels, corr.astype(np.float64))
 
     nonempty = counts > 0
     sum_k[nonempty] /= counts[nonempty, np.newaxis]
-    sum_v[nonempty] /= counts[nonempty, np.newaxis]
+
+    # corr-weighted mean values: sum(c_i v_i) / sum(c_i)
+    safe_mass = np.maximum(corr_mass, 1e-30)
+    sum_v_corr[nonempty] /= safe_mass[nonempty, np.newaxis]
 
     return (
         sum_k.astype(np.float32),
-        sum_v.astype(np.float32),
+        sum_v_corr.astype(np.float32),
+        corr_mass.astype(np.float32),
         counts,
     )
 
@@ -90,10 +108,12 @@ class LSHCrossPolytope(AttentionAlgorithm):
         self._name_suffix = name_suffix
         self._avg_keys = None
         self._avg_values = None
+        self._corr_mass = None
         self._counts = None
         self._R1 = None
         self._R2 = None
         self._key_mean = None
+        self._query_mean = None
         self._d = None
         self._n_cp = None
 
@@ -128,6 +148,15 @@ class LSHCrossPolytope(AttentionAlgorithm):
         self._R1 = _random_orthogonal(d, rng)
         self._R2 = _random_orthogonal(d, rng)
 
+        if queries is None or len(queries) == 0:
+            raise ValueError(
+                "LSHCrossPolytope.prepare requires non-empty queries "
+                "to compute mean_q"
+            )
+        self._query_mean = np.mean(
+            queries, axis=0, dtype=np.float64,
+        ).astype(np.float32)
+
         if len(keys) == 0:
             self._avg_keys = np.zeros(
                 (n_buckets, d), dtype=np.float32,
@@ -136,10 +165,16 @@ class LSHCrossPolytope(AttentionAlgorithm):
                 (n_buckets, values.shape[1]),
                 dtype=np.float32,
             )
+            self._corr_mass = np.zeros(
+                n_buckets, dtype=np.float32,
+            )
             self._counts = np.zeros(
                 n_buckets, dtype=np.int32,
             )
             self._key_mean = np.zeros(
+                d, dtype=np.float32,
+            )
+            self._query_mean = np.zeros(
                 d, dtype=np.float32,
             )
             return
@@ -166,10 +201,23 @@ class LSHCrossPolytope(AttentionAlgorithm):
             b2 = crosspolytope_bucket_labels(z2[1:])
             labels[1:] = b1 * n_cp + b2
 
+        # Query-centering correction factor:
+        # exp(q·k/sqrt(d)) = exp((q-mean_q)·k/sqrt(d))
+        #                   * exp(mean_q·k/sqrt(d)).
+        # We absorb exp(mean_q·k/sqrt(d)) into values.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            corr = np.exp(
+                (
+                    keys.astype(np.float64)
+                    @ self._query_mean.astype(np.float64)
+                ) / np.sqrt(d, dtype=np.float64)
+            ).astype(np.float32)
         (self._avg_keys,
          self._avg_values,
-         self._counts) = _bucket_means(
-            keys, values, labels, n_buckets,
+         self._corr_mass,
+         self._counts) = _bucket_stats(
+            keys, values, labels, corr, n_buckets,
         )
 
     def run(
@@ -184,15 +232,17 @@ class LSHCrossPolytope(AttentionAlgorithm):
             )
 
         q = problem.query.astype(np.float32)
+        q_centered = q - self._query_mean
         d = self._d
         n_cp = self._n_cp
         sqrt_d = np.sqrt(d, dtype=np.float64)
         sink_b = n_cp * n_cp
         counts = self._counts
+        corr_mass = self._corr_mass
         has_sink = counts[sink_b] > 0
 
         # Hash query with same centering + rotations
-        q_c = q - self._key_mean
+        q_c = q_centered - self._key_mean
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             z1_q = (self._R1 @ q_c).astype(np.float64)
@@ -256,6 +306,10 @@ class LSHCrossPolytope(AttentionAlgorithm):
 
         mk = self._avg_keys[all_idx]
         mv = self._avg_values[all_idx]
+        mass = np.maximum(
+            corr_mass[all_idx].astype(np.float64),
+            1e-30,
+        )
 
         # Importance weights: pi_sink = 1, others from CP
         log_pi = np.zeros(
@@ -270,10 +324,12 @@ class LSHCrossPolytope(AttentionAlgorithm):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             scores = (
-                (mk @ q).astype(np.float64) / sqrt_d
+                (mk @ q_centered).astype(np.float64) / sqrt_d
             )
-            # w_b proportional to exp(score_b - log(pi_b))
-            adjusted = scores - log_pi
+            # Denominator + numerator correction:
+            # add log(sum_i exp(mean_q·k_i/sqrt(d))) per bucket.
+            # w_b proportional to exp(score_b + log(mass_b) - log(pi_b))
+            adjusted = scores + np.log(mass) - log_pi
             w = softmax(adjusted).astype(np.float32)
             output = w @ mv
 
