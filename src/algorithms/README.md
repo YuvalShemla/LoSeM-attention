@@ -133,6 +133,9 @@ The evaluation runner calls methods in this order:
 | `idealized_methods.py` | `IdealTopK`, `IdealSampling`, `IdealEqualSplits`, `IdealEqualWeightSplits` |
 | `multiq_grouping.py` | MultiQ: KMeans on queries, per-centroid key ordering (C=1 = mean-query sort) |
 | `kmeans_clustering.py` | KMeans on keys, per-query cluster scoring |
+| `lsh_crosspoly_multiprobe.py` | LSH Cross-Polytope with multi-probe bucket ordering |
+| `lsh_crosspoly_clustered.py` | LSH Cross-Polytope with reduced-dim hashing, all-bucket-means attention |
+| `lsh_crosspoly_hybrid.py` | LSH Cross-Polytope hybrid: top-K buckets enumerated, rest as means |
 | `__init__.py` | `METHOD_REGISTRY` — maps string keys to `MethodSpec(cls, kind)` |
 
 ## Shared Utilities in `core.py`
@@ -172,15 +175,43 @@ these to gauge how close it gets to the theoretical best.
 
 ## Our Algorithms
 
+### Grouping-Based
+
 | Method | Offline | Per-query |
 |--------|---------|-----------|
 | `MultiQGrouping` | KMeans on all Q vectors -> C centroids. For each centroid, sort all keys by centroid-key logit, partition into G equal groups. | Route query to nearest centroid, use that centroid's grouping. Apply TopK or Hybrid mode. |
 | `KMeansClustering` | KMeans on all keys -> C clusters. Precompute per-cluster avg_key, avg_value, count, member indices. | Score each cluster by `q^T avg_key / sqrt(d) + log(count)`. Sort by score. Apply TopK or Hybrid mode. |
 
+### LSH Cross-Polytope Family
+
+All three LSH methods use cross-polytope (CP) hashing: center
+keys, apply two random orthogonal rotations, and assign each
+key to the nearest vertex of the cross-polytope `{±e_1, ..., ±e_k}`.
+Two independent hashes are combined into a single label
+`b1 * 2k + b2`, giving `(2k)^2 + 1` buckets (the extra bucket
+is for the sink token in the non-hybrid variants).
+
+| Method | Offline | Per-query |
+|--------|---------|-----------|
+| `LSHCrossPolytope` (multiprobe) | Full-dim CP hash (k=d=128, giving 65537 buckets). Compute per-bucket mean key/value. | Hash query, rank buckets by collision probability `pi_b = pi1[b1] * pi2[b2]`, probe top-`budget` buckets. Softmax over bucket means with optional count correction `+log(n_b)` and optional importance weighting `-log(pi_b)`. |
+| `LSHCrossPolytopeClustered` | Reduced-dim CP hash (k << d, e.g. k=8 gives 257 buckets). Compute per-bucket mean key/value. | Attend over ALL non-empty bucket means with count correction: `softmax(q·k̄_b/√d + log(n_b))`. No probing, no importance weighting. Budget controlled by k_dim. |
+| `LSHCrossPolytopeHybrid` | Reduced-dim CP hash (fixed k, e.g. k=11 gives 485 buckets). Store per-bucket member indices + mean key/value. | Score buckets by `q·k̄_b/√d + log(n_b)`, sort descending. Top-K buckets: enumerate all individual keys. Remaining: count-corrected means. Joint softmax over all. |
+
+**Key design choices:**
+- **Hashing** uses centered keys (`keys - mean(keys)`) and
+  truncated rotations (only the first k rows of each d×d
+  orthogonal matrix), making hashing O(n·d·k) instead of
+  O(n·d²).
+- **Scoring** always uses the original (uncentered) keys.
+  Centering only affects bucket assignment.
+- **Count correction** `+log(n_b)` ensures that a bucket with
+  100 tokens contributes proportionally more than one with 1
+  token: `softmax(s_b + log(n_b)) ∝ n_b · exp(s_b)`.
+
 ### Modes
 
-Both MultiQ and KMeans support two modes controlled by the
-`mode` and `top_k` parameters:
+MultiQ, KMeans, and LSH Hybrid support two modes controlled
+by the `mode` and `top_k` parameters:
 
 - **`topk`** — Expand the top-k groups into individual keys.
   Exact softmax over special + expanded keys only. Groups

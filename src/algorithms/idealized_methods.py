@@ -62,17 +62,16 @@ def _group_scores_and_values(
 
 
 def _equal_size_split(indices, n_groups):
-    """Split indices into n_groups equal-sized groups."""
-    n = len(indices)
-    group_size = max(1, n // n_groups)
-    groups = []
-    for i in range(n_groups):
-        start = i * group_size
-        end = (i + 1) * group_size if i < n_groups - 1 else n
-        if start >= n:
-            break
-        groups.append(indices[start:end])
-    return groups
+    """Split indices into n_groups balanced groups.
+
+    Sizes differ by at most 1: the first (n % n_groups)
+    groups get one extra element.
+    """
+    return [
+        np.asarray(g)
+        for g in np.array_split(indices, n_groups)
+        if len(g) > 0
+    ]
 
 
 class IdealTopK(AttentionAlgorithm):
@@ -277,18 +276,7 @@ class IdealEqualSplits(AttentionAlgorithm):
         if num_groups <= 0:
             num_groups = 1
 
-        # Equal-sized splits
-        group_size = max(1, n // num_groups)
-        groups = []
-        for i in range(num_groups):
-            start = i * group_size
-            if i < num_groups - 1:
-                end = (i + 1) * group_size
-            else:
-                end = n
-            if start >= n:
-                break
-            groups.append(sorted_idx[start:end])
+        groups = _equal_size_split(sorted_idx, num_groups)
 
         n_special = len(special_idx)
         n_groups = len(groups)

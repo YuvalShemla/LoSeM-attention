@@ -14,9 +14,9 @@ python -m src.extraction.extract_vectors
 
 # Run an evaluation
 python -m src.evaluation.run_evaluation \
-  --algorithms multiq kmeans \
+  --algorithms kmeans lsh_crosspoly_hybrid \
   --tasks math_calc code_run \
-  --name grouping_comparison_v1
+  --name hybrid_comparison_v1
 
 # Run exploration analysis
 python -m src.exploration.run_exploration --all
@@ -32,7 +32,10 @@ local-attention/
 │   │   ├── base.py         # ABC + dataclasses
 │   │   ├── idealized_methods.py  # IdealTopK, IdealSampling, IdealEqualSplits, IdealEqualWeightSplits
 │   │   ├── multiq_grouping.py
-│   │   └── kmeans_clustering.py
+│   │   ├── kmeans_clustering.py
+│   │   ├── lsh_crosspoly_multiprobe.py   # LSH CP: full-dim hash, multi-probe
+│   │   ├── lsh_crosspoly_clustered.py    # LSH CP: reduced-dim hash, all-bucket-means
+│   │   └── lsh_crosspoly_hybrid.py       # LSH CP: hybrid (top-K enumerated + rest as means)
 │   ├── evaluation/         # Runner, plotting, data loading
 │   │   ├── evaluation_config.yaml
 │   │   ├── run_evaluation.py

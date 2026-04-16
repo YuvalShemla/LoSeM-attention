@@ -345,6 +345,35 @@ def make_equal_groups(
     return groups
 
 
+_kmeans_cache: Dict = {}
+
+
+def cached_flat_kmeans(
+    data: np.ndarray,
+    C: int,
+    seed: int = 42,
+    n_iter: int = 20,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Cached wrapper around flat_kmeans.
+
+    Cache key is (id(data), C, seed) so that multiple
+    algorithms sharing the same keys array and cluster
+    count reuse one KMeans run per example.
+    """
+    key = (id(data), C, seed)
+    if key in _kmeans_cache:
+        return _kmeans_cache[key]
+    result = flat_kmeans(data, C, seed=seed, n_iter=n_iter)
+    _kmeans_cache[key] = result
+    return result
+
+
+def clear_kmeans_cache():
+    """Call between examples to free memory."""
+    _kmeans_cache.clear()
+
+
 def flat_kmeans(
     data: np.ndarray,
     C: int,
@@ -402,6 +431,63 @@ def flat_kmeans(
                 )
 
     return centroids, labels
+
+
+def snis_attention(
+    logits: np.ndarray,
+    values: np.ndarray,
+    inclusion_probs: np.ndarray,
+    special_logits: np.ndarray,
+    special_values: np.ndarray,
+) -> np.ndarray:
+    """
+    Self-Normalized Importance Sampling attention (MagicPIG-style).
+
+    For retrieved (sampled) keys, the SNIS estimator is:
+        o = softmax(logit_i - log(u_i)) @ v_i
+    where u_i is the inclusion probability from LSH.
+
+    Special keys (sink + local) are always included with
+    no correction (inclusion_prob = 1, so -log(1) = 0).
+
+    Args:
+        logits: [n_retrieved] raw logits for sampled keys
+        values: [n_retrieved, d] values for sampled keys
+        inclusion_probs: [n_retrieved] LSH inclusion probs
+        special_logits: [n_special] logits for special keys
+        special_values: [n_special, d] values for special keys
+
+    Returns:
+        output: [d] SNIS-corrected attention output
+    """
+    n_ret = len(logits)
+    n_sp = len(special_logits)
+    n_total = n_ret + n_sp
+
+    if n_total == 0:
+        d = values.shape[1] if n_ret > 0 else special_values.shape[1]
+        return np.zeros(d, dtype=np.float32)
+
+    scores = np.empty(n_total, dtype=np.float64)
+    all_values = np.empty(
+        (n_total, values.shape[1] if n_ret > 0 else special_values.shape[1]),
+        dtype=np.float32,
+    )
+
+    # Special keys: no correction
+    scores[:n_sp] = special_logits.astype(np.float64)
+    all_values[:n_sp] = special_values
+
+    # Retrieved keys: SNIS correction
+    if n_ret > 0:
+        log_u = np.log(np.maximum(
+            inclusion_probs.astype(np.float64), 1e-30,
+        ))
+        scores[n_sp:] = logits.astype(np.float64) - log_u
+        all_values[n_sp:] = values
+
+    w = softmax(scores).astype(np.float32)
+    return w @ all_values
 
 
 def hybrid_attention(

@@ -69,8 +69,9 @@ tasks:
 
 evaluation:
   seed: 42
-  n_queries: 10         # query positions per example (last N tokens)
+  n_queries: 1          # query positions per example (last N tokens)
   n_examples: 1         # examples per task (strict)
+  use_rope: true        # false to use pre-RoPE (raw) Q and K
 
   # Compute per-query attention statistics (entropy,
   # top-100 mass) alongside error metrics. Nearly free
@@ -89,7 +90,7 @@ evaluation:
 
   exclude_sink_token: true
   local_window:
-    size: 0
+    size: 100
 
   budget_sweep:
     absolute:
@@ -113,15 +114,86 @@ algorithm_configs:
     modes: ["topk", "hybrid"]
     top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
   kmeans:
-    n_clusters: 256
-    modes: ["topk", "hybrid"]
-    top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
+    n_clusters_sweep: [16, 32, 64, 128, 256, 384, 512, 768, 1024, 2048, 3072, 4096, 8192, 16384]
+    modes: ["hybrid"]
+    top_k_sweep: [0]
+  kmeans_nearest_center:
+    n_clusters_sweep: [16, 32, 64, 128, 256, 384, 512, 768, 1024, 2048, 3072, 4096, 8192, 16384]
+  kmeans_medoid_select:
+    n_clusters_sweep: [16, 32, 64, 128, 256, 384, 512, 768, 1024, 2048, 3072, 4096, 8192, 16384]
+  kmeans_query_weighted:
+    n_clusters_sweep: [64, 256, 512, 1024, 2048, 4096]
+    alpha_sweep: [0.5, 1.0]
   lsh_crosspoly: {}
   lsh_crosspoly_clustered:
     # k -> (2k)^2+1 buckets: 2->17, 3->37, 4->65, 6->145,
-    # 8->257, 11->485, 16->1025, 23->2117
-    k_dims: [2, 3, 4, 6, 8, 11, 16, 23]
+    # 8->257, 11->485, 16->1025, 23->2117, 32->4097,
+    # 45->8101, 64->16385, 90->32401, 128->65537
+    k_dims: [2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 90, 128]
     n_repetitions: [1]
+  lsh_crosspoly_hybrid:
+    k_dim: 11   # -> (2*11)^2+1 = 485 buckets
+    top_k_sweep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 16]
+  ideal_splits_hybrid:
+    n_groups: 512
+    top_k_sweep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 16]
+  kmeans_residual:
+    n_clusters: 512
+    n_residuals_sweep: [32]
+    top_k_refine_sweep: [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+  kmeans_adaptive:
+    n_close_clusters: 512
+    n_far_clusters: 128
+    n_residuals: 64
+    close_frac: 0.5
+    top_k_refine_sweep: [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+  kmeans_residual_sparse:
+    n_clusters: 512
+    n_residuals_sweep: [0, 2, 8, 16]
+    top_k_sweep: [1, 2, 4, 8, 16, 32, 64, 128, 256]
+  kmeans_multiview:
+    n_views: [50]
+    n_clusters: [512]
+    n_kmeans_iter: [5]
+  kmeans_ablation:
+    n_clusters_sweep: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+    combos:
+      - {key_mode: "centroid", val_mode: "centroid"}
+      - {key_mode: "medoid", val_mode: "centroid"}
+      - {key_mode: "centroid", val_mode: "medoid"}
+      - {key_mode: "medoid", val_mode: "medoid"}
+  kmeans_hybrid_topk:
+    n_clusters_sweep: [16, 32, 64, 128, 256, 384, 512, 768, 1024, 2048, 3072, 4096]
+    n_exact: 512
+    modes: ["hybrid", "topk"]
+  lsh_simhash_snis:
+    # Budget ranges by (K, L) -- empirically measured:
+    #   K=8:  L=10->~100, L=20->~400, L=35->~700, L=50->~1500, L=75->~3000
+    #   K=9:  L=10->~25, L=20->~100, L=35->~300, L=50->~600, L=75->~900,
+    #         L=100->~1300, L=120->~2100, L=150->~3200
+    #   K=10: L=20->~35, L=35->~80, L=50->~160, L=75->~350, L=100->~470,
+    #         L=120->~680, L=150->~1000, L=200->~1800, L=300->~3500
+    #   K=11: L=35->~35, L=50->~70, L=75->~100, L=100->~170, L=120->~290,
+    #         L=150->~350, L=200->~540, L=300->~1400, L=400->~1900
+    K_sweep: [8, 9, 10, 11, 12]
+    L_sweep: [10, 50, 100, 150, 200, 300]
+    min_hits: 2
+    center_keys: true
+  kmeans_kk:
+    # Budget = 2K + special. K values chosen so 2K <= 4096.
+    K_sweep: [16, 32, 64, 128, 256, 512, 1024, 2048]
+  ews_ablation: {}
+  exactz_sampled_keys:
+    # Exact Z + Voronoi-clustered values. Budget = S + special.
+    n_samples_sweep: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  hierarchical_kmeans:
+    branching_combos:
+      - [32, 16, 8]     # balanced 3-level, 4096 max leaves
+      - [64, 16, 4]     # wide top, narrow bottom
+      - [16, 8, 4, 2]   # 4-level deep tree, 1024 max leaves
+      - [64, 8, 8]      # wide top, moderate depth
+      - [128, 32]       # 2-level, very wide
+    leaf_threshold: 8
 
 # ── Plot Settings ──
 plotting:
@@ -133,22 +205,54 @@ plotting:
   algorithm_linestyle: "-"
   error_bands: false
 
+  budget_sweep_colors:
+    HierKM-32x16x8-0: "#1f77b4"             # blue
+    HierKM-64x16x4-1: "#17becf"             # cyan
+    HierKM-16x8x4x2-2: "#9467bd"            # purple
+    HierKM-64x8x8-3: "#e377c2"              # pink
+    HierKM-128x32-4: "#8c564b"              # brown
+
   idealized_colors:
     IdealTopK: "#d62728"                     # red
     IdealSampling: "#2ca02c"                 # green
-    IdealEqualSplits: "#1f77b4"              # blue
     IdealEqualWeightSplits: "#9467bd"        # purple
+    EWS+NoiseK: "#00bfff"                    # sky blue
+    EWS+NoiseV: "#ff8c00"                    # dark orange
+    EWS+NoiseKV: "#e377c2"                   # pink
+    EWS+NoiseKV-G0: "#8c564b"               # brown
+    EWS+NoiseKV-Hi: "#17becf"               # cyan
+    EWS+NoiseKV-Lo: "#bcbd22"               # olive
 
   algorithm_colors:
     kmeans:
       topk: "#ffb380"
       hybrid: "#ff7f0e"
       marker: "D"
+    kmeanscentroid:
+      topk: "#ff7f0e"
+      hybrid: "#ff7f0e"
+      marker: "D"
+    kmeansmedoid:
+      topk: "#ff69b4"
+      hybrid: "#ff69b4"
+      marker: "s"
+    kmeansmedoidselect:
+      topk: "#c71585"
+      hybrid: "#c71585"
+      marker: "^"
+    kmeansqw50:
+      topk: "#6a0dad"
+      hybrid: "#6a0dad"
+      marker: "v"
+    kmeansqw100:
+      topk: "#9b30ff"
+      hybrid: "#9b30ff"
+      marker: "P"
     multiq:
       topk: "#7fbfff"
       hybrid: "#1f77b4"
       marker: "X"
-    lsh_crosspoly_multiprobe:
+    lsh_crosspoly_multiprobe_plain:
       topk: "#17becf"
       hybrid: "#17becf"
       marker: "h"
@@ -156,14 +260,99 @@ plotting:
       topk: "#e377c2"
       hybrid: "#e377c2"
       marker: "p"
+    lsh_crosspoly_multiprobe_iw:
+      topk: "#bcbd22"
+      hybrid: "#bcbd22"
+      marker: "D"
+    lsh_crosspoly_multiprobe_iw_count_corrected:
+      topk: "#8c564b"
+      hybrid: "#8c564b"
+      marker: "^"
     lsh_crosspoly_clustered:
-      topk: "#ff7f0e"
-      hybrid: "#ff7f0e"
+      topk: "#e91e9e"
+      hybrid: "#e91e9e"
+      marker: "h"
+    lsh_crosspoly_hybrid_c485:
+      topk: "#2ca02c"
+      hybrid: "#2ca02c"
+      marker: "^"
+    idealsplits_g512:
+      topk: "#87ceeb"
+      hybrid: "#87ceeb"
+      marker: "o"
       marker: "s"
     lsh_crosspoly_clustered_r10:
       topk: "#d62728"
       hybrid: "#d62728"
       marker: "^"
+    kmeansres_c512_r32:
+      topk: "#e377c2"
+      hybrid: "#e377c2"
+      marker: "D"
+    kmeansressp_c512_r0:
+      topk: "#aaaaaa"
+      hybrid: "#aaaaaa"
+      marker: "s"
+    kmeansressp_c512_r2:
+      topk: "#ff9896"
+      hybrid: "#ff9896"
+      marker: "^"
+    kmeansressp_c512_r8:
+      topk: "#98df8a"
+      hybrid: "#98df8a"
+      marker: "D"
+    kmeansressp_c512_r16:
+      topk: "#ff7f0e"
+      hybrid: "#ff7f0e"
+      marker: "v"
+    kmeansadapt_f128_c512r64:
+      topk: "#17becf"
+      hybrid: "#17becf"
+      marker: "p"
+    kmeansmv_v50_c512_it5:
+      topk: "#8b0000"
+      hybrid: "#8b0000"
+      marker: "H"
+    centk_centv:
+      topk: "#ff7f0e"
+      hybrid: "#ff7f0e"
+      marker: "D"
+    medk_centv:
+      topk: "#17becf"
+      hybrid: "#17becf"
+      marker: "s"
+    centk_medv:
+      topk: "#e377c2"
+      hybrid: "#e377c2"
+      marker: "^"
+    medk_medv:
+      topk: "#8c564b"
+      hybrid: "#8c564b"
+      marker: "o"
+    hybrid512:
+      topk: "#ff7f0e"
+      hybrid: "#ff7f0e"
+      marker: "D"
+    topk512:
+      topk: "#ffb380"
+      hybrid: "#ffb380"
+      marker: "o"
+    simhash_snis:
+      topk: "#800080"
+      hybrid: "#800080"
+      marker: "X"
+    kmeans_kk:
+      topk: "#e67300"
+      hybrid: "#e67300"
+      marker: "D"
+    exactz_sk:
+      topk: "#ff69b4"
+      hybrid: "#ff69b4"
+      marker: "v"
+    hierkm:
+      topk: "#1f77b4"
+      hybrid: "#1f77b4"
+      marker: "P"
 
 
 # ══════════════════════════════════════════════════════
