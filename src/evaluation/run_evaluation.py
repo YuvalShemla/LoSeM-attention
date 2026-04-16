@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..algorithms import METHOD_REGISTRY
+from ..core import clear_kmeans_cache
 from .data_loader import (
     load_examples, count_examples, discover_examples,
 )
@@ -66,10 +67,20 @@ def build_algorithm_plot_families(algorithms, config: dict):
         pfx = re.sub(
             r"-(topk|hybrid)-k\d+$", "", m.name,
         )
+        # Also strip trailing -{digits} so that e.g.
+        # "Foo-33" and "Foo-129" share family "Foo".
+        if not m.sweeps_budget:
+            pfx = re.sub(r"-\d+$", "", pfx)
         if pfx in seen:
             continue
         seen[pfx] = True
-        c = color_map.get(algo_name, {})
+        # Check for prefix-specific color key first
+        # (e.g. "lsh_crosspoly_cc" for a variant),
+        # then fall back to the registry name.
+        pfx_key = pfx.lower().replace("-", "_")
+        c = color_map.get(
+            pfx_key, color_map.get(algo_name, {}),
+        )
         tk_sweep = config.get(
             "algorithm_configs", {}
         ).get(algo_name, {}).get(
@@ -135,6 +146,13 @@ def replay_plots(results_dir: Path) -> None:
             continue
         with open(agg_path) as f:
             agg = json.load(f)
+
+        # Inject point labels from algorithm instances
+        for m in algorithms:
+            if m.point_label and m.name in agg:
+                agg[m.name]["point_label"] = (
+                    m.point_label
+                )
 
         per_task_agg[task] = agg
 
@@ -298,6 +316,7 @@ class Evaluation:
         self.seed = exp["seed"]
         self.n_queries = exp["n_queries"]
         self.n_examples = exp.get("n_examples", 10)
+        self.use_rope = exp.get("use_rope", True)
         self.budgets = exp["budget_sweep"]["absolute"]
         self.head_dim = self.config["model"]["head_dim"]
         self.n_sink = (
@@ -519,6 +538,7 @@ class Evaluation:
         all_results = []
         per_head_results = {}
         rows = []
+        cluster_quality_rows = []
         example_ids = set()
         seq_lens = []
 
@@ -536,6 +556,7 @@ class Evaluation:
                 layer_idx, q_head, kv_head,
                 phase=phase,
                 max_examples=self.n_examples,
+                use_rope=self.use_rope,
             ))
             if not examples:
                 raise FileNotFoundError(
@@ -571,6 +592,21 @@ class Evaluation:
                         query_positions=qpos_list,
                         seed=self.seed,
                     )
+
+                # Collect cluster quality metrics
+                for m in methods:
+                    cq = m.cluster_quality()
+                    if cq is not None:
+                        cluster_quality_rows.append({
+                            "task": task,
+                            "head_idx": hi - 1,
+                            "example": ex["example_id"],
+                            "method": m.name,
+                            "avg_cosine_sim": cq[
+                                "avg_cosine_sim"
+                            ],
+                            "n_groups": cq["n_groups"],
+                        })
 
                 for qpos in qpos_list:
                     qr = evaluate_query(
@@ -618,6 +654,7 @@ class Evaluation:
                         })
 
                 del Q, K, V
+                clear_kmeans_cache()
                 gc.collect()
 
         n_total = len(all_results)
@@ -640,6 +677,11 @@ class Evaluation:
             if label:
                 tag += f"_{label}"
             head_agg = aggregate_results(results)
+            for m in methods:
+                if m.point_label and m.name in head_agg:
+                    head_agg[m.name]["point_label"] = (
+                        m.point_label
+                    )
             per_head_aggs[idx] = {
                 "agg": head_agg,
                 "layer": l, "q_head": h,
@@ -661,6 +703,12 @@ class Evaluation:
                 },
             )
 
+        settings_desc = (
+            f"n_queries={self.n_queries}, "
+            f"local_window={self.local_window}, "
+            f"n_sink={self.n_sink}"
+        )
+
         if len(per_head_aggs) > 1:
             unique_lens = sorted(set(seq_lens))
             if len(unique_lens) == 1:
@@ -673,7 +721,9 @@ class Evaluation:
                 self.config.get("plotting", {}),
                 self.budgets, families,
                 task_name=task,
-                seq_desc=seq_desc,
+                seq_desc=(
+                    f"{seq_desc}  |  {settings_desc}"
+                ),
             )
 
         # Weighted aggregate across heads
@@ -683,6 +733,13 @@ class Evaluation:
             )
         else:
             agg = aggregate_results(all_results)
+
+        # Inject point labels for plot annotations
+        for m in methods:
+            if m.point_label and m.name in agg:
+                agg[m.name]["point_label"] = (
+                    m.point_label
+                )
 
         unique_lens = sorted(set(seq_lens))
         if len(unique_lens) == 1:
@@ -695,7 +752,10 @@ class Evaluation:
             agg, task_dir,
             self.config.get("plotting", {}),
             self.budgets, families,
-            title=f"{task} — {seq_desc}",
+            title=(
+                f"{task} — {seq_desc}\n"
+                f"({settings_desc})"
+            ),
             n_queries=n_total,
         )
 
@@ -745,6 +805,17 @@ class Evaluation:
             f"per_task/{task}/data_statistics.json",
             data_stats,
         )
+
+        if cluster_quality_rows:
+            self._save_json(
+                f"per_task/{task}/cluster_quality.json",
+                cluster_quality_rows,
+            )
+            log.info(
+                "  Cluster quality saved for %d "
+                "method/example combos",
+                len(cluster_quality_rows),
+            )
 
         log.info(
             "  Task complete: %d queries, %.1fs",

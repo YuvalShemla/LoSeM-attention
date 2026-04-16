@@ -17,18 +17,61 @@ from .base import (
 from ..core import softmax, subset_attention
 
 
+def _group_scores_and_values(
+    groups, keys, values, query, sqrt_d,
+):
+    """
+    Vectorized mean-key scores and mean-values for a
+    list of index groups.  Avoids a Python loop with
+    per-group np.mean calls by concatenating all indices,
+    computing a single scatter-based mean, then gathering.
+    """
+    n_groups = len(groups)
+    d = keys.shape[1]
+
+    # Build flat labels array
+    sizes = np.array([len(g) for g in groups], dtype=np.int64)
+    flat_idx = np.concatenate(groups)
+    labels = np.repeat(np.arange(n_groups), sizes)
+
+    # Per-group sums via bincount (one call per column)
+    sum_k = np.empty((n_groups, d), dtype=np.float64)
+    sum_v = np.empty((n_groups, d), dtype=np.float64)
+    k_flat = keys[flat_idx]
+    v_flat = values[flat_idx]
+    for j in range(d):
+        sum_k[:, j] = np.bincount(
+            labels, weights=k_flat[:, j].astype(np.float64),
+            minlength=n_groups,
+        )
+        sum_v[:, j] = np.bincount(
+            labels, weights=v_flat[:, j].astype(np.float64),
+            minlength=n_groups,
+        )
+
+    # Mean = sum / count
+    sizes_f = sizes.astype(np.float64)[:, np.newaxis]
+    avg_k = (sum_k / sizes_f).astype(np.float32)
+    avg_v = (sum_v / sizes_f).astype(np.float32)
+
+    scores = (
+        avg_k @ query / sqrt_d
+        + np.log(sizes.astype(np.float64))
+    )
+    return scores, avg_v
+
+
 def _equal_size_split(indices, n_groups):
-    """Split indices into n_groups equal-sized groups."""
-    n = len(indices)
-    group_size = max(1, n // n_groups)
-    groups = []
-    for i in range(n_groups):
-        start = i * group_size
-        end = (i + 1) * group_size if i < n_groups - 1 else n
-        if start >= n:
-            break
-        groups.append(indices[start:end])
-    return groups
+    """Split indices into n_groups balanced groups.
+
+    Sizes differ by at most 1: the first (n % n_groups)
+    groups get one extra element.
+    """
+    return [
+        np.asarray(g)
+        for g in np.array_split(indices, n_groups)
+        if len(g) > 0
+    ]
 
 
 class IdealTopK(AttentionAlgorithm):
@@ -84,10 +127,9 @@ class IdealTopK(AttentionAlgorithm):
             top_pos = np.arange(n_cand)
         topk_idx = candidate_idx[top_pos]
 
-        all_idx = np.unique(
-            np.concatenate([special_idx, topk_idx])
-            .astype(np.int64)
-        )
+        all_idx = np.concatenate(
+            [special_idx, topk_idx],
+        ).astype(np.int64)
         output = subset_attention(
             logits, values, all_idx,
         )
@@ -152,28 +194,17 @@ class IdealSampling(AttentionAlgorithm):
 
         buse = min(budget, n_cand)
 
-        # Sample with replacement until we collect
-        # exactly `buse` unique candidates
         cand_logits = logits[candidate_idx]
         cand_w = softmax(cand_logits)
-        unique_pos = set()
-        while len(unique_pos) < buse:
-            batch = min(
-                buse * 2, n_cand * 4,
-            )
-            drawn = rng.choice(
-                n_cand, size=batch,
-                p=cand_w, replace=True,
-            )
-            unique_pos.update(drawn.tolist())
-        # Trim to exact budget
-        unique_pos = list(unique_pos)[:buse]
-        sampled_idx = candidate_idx[unique_pos]
-
-        all_idx = np.unique(
-            np.concatenate([special_idx, sampled_idx])
-            .astype(np.int64)
+        chosen = rng.choice(
+            n_cand, size=buse,
+            p=cand_w, replace=False,
         )
+        sampled_idx = candidate_idx[chosen]
+
+        all_idx = np.concatenate(
+            [special_idx, sampled_idx],
+        ).astype(np.int64)
         output = subset_attention(
             logits, values, all_idx,
         )
@@ -245,34 +276,22 @@ class IdealEqualSplits(AttentionAlgorithm):
         if num_groups <= 0:
             num_groups = 1
 
-        # Equal-sized splits
-        group_size = max(1, n // num_groups)
-        groups = []
-        for i in range(num_groups):
-            start = i * group_size
-            if i < num_groups - 1:
-                end = (i + 1) * group_size
-            else:
-                end = n
-            if start >= n:
-                break
-            groups.append(sorted_idx[start:end])
+        groups = _equal_size_split(sorted_idx, num_groups)
 
         n_special = len(special_idx)
-        n_total = n_special + len(groups)
+        n_groups = len(groups)
+        n_total = n_special + n_groups
         scores = np.empty(n_total)
         out_vals = np.empty((n_total, head_dim))
 
         scores[:n_special] = logits[special_idx]
         out_vals[:n_special] = values[special_idx]
 
-        for gi, idx in enumerate(groups):
-            avg_k = np.mean(keys[idx], axis=0)
-            avg_v = np.mean(values[idx], axis=0)
-            scores[n_special + gi] = (
-                q @ avg_k / sqrt_d + np.log(len(idx))
+        scores[n_special:], out_vals[n_special:] = (
+            _group_scores_and_values(
+                groups, keys, values, q, sqrt_d,
             )
-            out_vals[n_special + gi] = avg_v
+        )
 
         w = softmax(scores)
         output = w @ out_vals
@@ -345,20 +364,19 @@ class IdealEqualWeightSplits(AttentionAlgorithm):
         )
 
         n_special = len(special_idx)
-        n_total = n_special + len(groups)
+        n_groups = len(groups)
+        n_total = n_special + n_groups
         scores = np.empty(n_total)
         out_vals = np.empty((n_total, head_dim))
 
         scores[:n_special] = logits[special_idx]
         out_vals[:n_special] = values[special_idx]
 
-        for gi, idx in enumerate(groups):
-            avg_k = np.mean(keys[idx], axis=0)
-            avg_v = np.mean(values[idx], axis=0)
-            scores[n_special + gi] = (
-                q @ avg_k / sqrt_d + np.log(len(idx))
+        scores[n_special:], out_vals[n_special:] = (
+            _group_scores_and_values(
+                groups, keys, values, q, sqrt_d,
             )
-            out_vals[n_special + gi] = avg_v
+        )
 
         w = softmax(scores)
         output = w @ out_vals
