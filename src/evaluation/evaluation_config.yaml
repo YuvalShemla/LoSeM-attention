@@ -71,6 +71,7 @@ evaluation:
   seed: 42
   n_queries: 10         # query positions per example (last N tokens)
   n_examples: 1         # examples per task (strict)
+  use_rope: true        # false to use pre-RoPE (raw) Q and K
 
   # Compute per-query attention statistics (entropy,
   # top-100 mass) alongside error metrics. Nearly free
@@ -117,6 +118,14 @@ algorithm_configs:
     modes: ["topk", "hybrid"]
     top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
   lsh_crosspoly: {}
+  lsh_crosspoly_clustered:
+    k_dims: [2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 90, 128]
+    n_repetitions: [1]
+  lsh_simhash_snis:
+    K_sweep: [8, 9, 10, 11, 12]
+    L_sweep: [10, 50, 100, 150, 200, 300]
+    min_hits: 2
+    center_keys: true
 
 # ── Plot Settings ──
 plotting:
@@ -147,6 +156,14 @@ plotting:
       topk: "#17becf"
       hybrid: "#17becf"
       marker: "h"
+    lsh_crosspoly_clustered:
+      topk: "#e91e9e"
+      hybrid: "#e91e9e"
+      marker: "h"
+    simhash_snis:
+      topk: "#800080"
+      hybrid: "#800080"
+      marker: "X"
 
 
 # ══════════════════════════════════════════════════════

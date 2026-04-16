@@ -99,16 +99,28 @@ def plot_idealized_methods(
     show_bands = plot_cfg.get("error_bands", True)
 
     idealized_specs = [
-        ("IdealTopK", "IdealTopK (individual keys)"),
+        ("IdealTopK", "IdealTopK"),
         ("IdealSampling", "IdealSampling"),
         ("IdealEqualSplits", "IdealEqualSplits"),
-        ("IdealEqualWeightSplits", "IdealEqualWeightSplits"),
+        ("IdealEqualWeightSplits", "EWS (clean)"),
+        ("EWS+NoiseK", "EWS+NoiseK"),
+        ("EWS+NoiseV", "EWS+NoiseV"),
+        ("EWS+NoiseKV", "EWS+NoiseKV"),
+        ("EWS+NoiseKV-G0", "EWS+NoiseKV (group 0)"),
+        ("EWS+NoiseKV-Hi", "EWS+NoiseKV (top half)"),
+        ("EWS+NoiseKV-Lo", "EWS+NoiseKV (bottom half)"),
     ]
     default_colors = {
         "IdealTopK": "#d62728",
         "IdealSampling": "#2ca02c",
         "IdealEqualSplits": "#1f77b4",
         "IdealEqualWeightSplits": "#9467bd",
+        "EWS+NoiseK": "#00bfff",
+        "EWS+NoiseV": "#ff8c00",
+        "EWS+NoiseKV": "#e377c2",
+        "EWS+NoiseKV-G0": "#8c564b",
+        "EWS+NoiseKV-Hi": "#17becf",
+        "EWS+NoiseKV-Lo": "#bcbd22",
     }
 
     for method_name, label in idealized_specs:
@@ -126,9 +138,69 @@ def plot_idealized_methods(
                     method_name,
                     default_colors[method_name],
                 ),
-                ls="--", marker="o", lw=2.5, ms=7,
-                zorder=4,
+                ls="--", marker="o", lw=1.5, ms=5,
+                zorder=3,
                 label=label,
+            )
+
+    # Budget-sweeping algorithms (solid lines, scatter)
+    budget_sweep_colors = plot_cfg.get(
+        "budget_sweep_colors", {},
+    )
+    seen_prefixes = set()
+    for key in sorted(agg.keys()):
+        if key.startswith("_"):
+            continue
+        # Match keys like "HierKM-32x16x8-0-256"
+        # that aren't idealized or topk/hybrid format
+        parts = key.rsplit("-", 1)
+        if len(parts) != 2:
+            continue
+        prefix, maybe_budget = parts
+        if not maybe_budget.isdigit():
+            continue
+        # Skip idealized methods already plotted
+        if any(
+            prefix == spec[0]
+            for spec in idealized_specs
+        ):
+            continue
+        # Skip methods with point labels (plotted
+        # by plot_algorithm_family as scatter)
+        if agg[key].get("point_label"):
+            continue
+        if prefix in seen_prefixes:
+            continue
+        # Collect all budget points for this prefix
+        x, y, s = [], [], []
+        for b in budgets:
+            k = f"{prefix}-{b}"
+            if k in agg:
+                x.append(agg[k]["budget_mean"])
+                y.append(agg[k]["error_mean"])
+                s.append(agg[k].get("error_std", 0))
+        if x:
+            seen_prefixes.add(prefix)
+            color = budget_sweep_colors.get(
+                prefix, colors.get(prefix, None),
+            )
+            if color is None:
+                # Auto-assign from a palette
+                palette = [
+                    "#1f77b4", "#ff7f0e", "#2ca02c",
+                    "#d62728", "#9467bd", "#8c564b",
+                    "#e377c2", "#7f7f7f", "#bcbd22",
+                    "#17becf",
+                ]
+                idx = len(seen_prefixes) % len(palette)
+                color = palette[idx]
+            _plot_with_error_band(
+                ax, x, y,
+                s if show_bands else None,
+                color=color,
+                ls="-", marker="D", lw=2, ms=6,
+                zorder=5,
+                label=prefix,
             )
 
 
@@ -212,7 +284,8 @@ def plot_algorithm_family(
         pat = re.compile(
             rf"^{re.escape(prefix)}-(\d+)$",
         )
-        bx, by, bs = [], [], []
+        bx, by, bs, pt_labels = [], [], [], []
+        has_pt_labels = False
         for k in sorted(
             agg.keys(),
             key=lambda k: agg[k].get(
@@ -221,23 +294,56 @@ def plot_algorithm_family(
         ):
             if pat.match(k):
                 e = agg[k]
+                pl = e.get("point_label", "")
+                if pl:
+                    has_pt_labels = True
+                    if e["budget_mean"] > 2500:
+                        continue
                 bx.append(e["budget_mean"])
                 by.append(e["error_mean"])
                 bs.append(e.get("error_std", 0))
+                pt_labels.append(pl)
         if bx:
-            _plot_with_error_band(
-                ax, bx, by,
-                bs if show_bands else None,
-                color=color_hybrid,
-                marker=marker, ls="-",
-                lw=2.5, ms=7, alpha=0.9,
-                zorder=5, label=label,
+            leg_label = (
+                f"{label} (K/L)" if has_pt_labels
+                else label
             )
+            if has_pt_labels:
+                ax.scatter(
+                    bx, by,
+                    color=color_hybrid,
+                    marker=marker, s=50,
+                    alpha=0.9, zorder=8,
+                    label=leg_label,
+                )
+            else:
+                _plot_with_error_band(
+                    ax, bx, by,
+                    bs if show_bands else None,
+                    color=color_hybrid,
+                    marker=marker, ls="-",
+                    lw=2.5, ms=7, alpha=0.9,
+                    zorder=5, label=leg_label,
+                )
+            for xv, yv, pl in zip(
+                bx, by, pt_labels,
+            ):
+                if pl:
+                    ax.annotate(
+                        pl, xy=(xv, yv),
+                        fontsize=7,
+                        fontweight="bold",
+                        color="black",
+                        xytext=(6, 6),
+                        textcoords="offset points",
+                        zorder=10,
+                    )
         elif prefix in agg:
             e = agg[prefix]
             bm = e["budget_mean"]
             em = e["error_mean"]
             es = e.get("error_std", 0)
+            pl = e.get("point_label", "")
             yerr = (
                 [es] if show_bands and es > 0
                 else None
@@ -249,6 +355,14 @@ def plot_algorithm_family(
                 capsize=4, lw=2.0, ms=9,
                 zorder=6, label=label,
             )
+            if pl:
+                ax.annotate(
+                    pl, xy=(bm, em),
+                    fontsize=5,
+                    color=color_hybrid,
+                    xytext=(4, 3),
+                    textcoords="offset points",
+                )
 
 
 def plot_evaluation(

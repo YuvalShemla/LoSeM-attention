@@ -7,14 +7,49 @@ Per-query cost: O(C) cluster scoring + O(C log C) sort.
 """
 
 import numpy as np
-from typing import List, Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .base import (
     AttentionAlgorithm, AttentionInput, AttentionOutput,
 )
 from ..core import (
-    softmax, hybrid_attention, flat_kmeans,
+    softmax, hybrid_attention, cached_flat_kmeans,
 )
+
+
+def _avg_cosine_similarity(
+    keys: np.ndarray,
+    labels: np.ndarray,
+    centroids: np.ndarray,
+    C: int,
+) -> float:
+    """
+    Weighted average cosine similarity of keys to their
+    assigned cluster centroid.
+    """
+    total_sim = 0.0
+    total_n = 0
+    for c in range(C):
+        mask = labels == c
+        count = int(np.sum(mask))
+        if count == 0:
+            continue
+        k_c = keys[mask]
+        mu = centroids[c]
+        mu_norm = np.linalg.norm(mu)
+        if mu_norm < 1e-10:
+            continue
+        k_norms = np.linalg.norm(k_c, axis=1)
+        valid = k_norms > 1e-10
+        if not np.any(valid):
+            continue
+        dots = k_c[valid] @ mu
+        cos = dots / (k_norms[valid] * mu_norm)
+        total_sim += float(np.sum(cos))
+        total_n += int(np.sum(valid))
+    if total_n == 0:
+        return 0.0
+    return total_sim / total_n
 
 
 def precompute_cluster_stats(
@@ -109,9 +144,12 @@ class KMeansClustering(AttentionAlgorithm):
         self.mode = mode
         self.top_k = top_k
         self._cluster_stats = None
+        self._quality: Optional[Dict[str, float]] = None
 
     @property
     def name(self) -> str:
+        if self.mode == "hybrid" and self.top_k == 0:
+            return f"KMeansCentroid-{self.n_clusters}"
         return (
             f"KMeans-C{self.n_clusters}"
             f"-{self.mode}-k{self.top_k}"
@@ -127,12 +165,24 @@ class KMeansClustering(AttentionAlgorithm):
         seed: int = 42,
     ) -> None:
         """Run KMeans on keys and precompute stats."""
-        _, labels = flat_kmeans(
+        centroids, labels = cached_flat_kmeans(
             keys, self.n_clusters, seed=seed,
         )
         self._cluster_stats = precompute_cluster_stats(
             keys, values, labels, self.n_clusters,
         )
+        n_nonempty = int(np.sum(
+            self._cluster_stats["counts"] > 0
+        ))
+        self._quality = {
+            "avg_cosine_sim": _avg_cosine_similarity(
+                keys, labels, centroids, self.n_clusters,
+            ),
+            "n_groups": n_nonempty,
+        }
+
+    def cluster_quality(self) -> Optional[Dict[str, float]]:
+        return self._quality
 
     def run(
         self,
@@ -156,7 +206,6 @@ class KMeansClustering(AttentionAlgorithm):
         sqrt_d = np.sqrt(head_dim)
 
         cs = self._cluster_stats
-        avg_keys = cs["avg_keys"]
 
         cm, cc, vm = _filter_cluster_members(
             cs, n_causal, special_set,
@@ -169,10 +218,10 @@ class KMeansClustering(AttentionAlgorithm):
                 actual_budget=0,
             )
 
-        # Score each valid cluster
+        # Score each valid cluster using causal-only means
         scores = np.array([
             float(
-                q @ avg_keys[c] / sqrt_d
+                q @ np.mean(keys[cm[c]], axis=0) / sqrt_d
                 + np.log(cc[c])
             )
             for c in valid_clusters
@@ -198,13 +247,16 @@ class KMeansClustering(AttentionAlgorithm):
     @staticmethod
     def expand_from_config(cfg: dict) -> list:
         instances = []
-        for mode in cfg.get("modes", ["hybrid"]):
-            for k in cfg.get("top_k_sweep", [5]):
-                instances.append(KMeansClustering(
-                    n_clusters=cfg.get(
-                        "n_clusters", 256
-                    ),
-                    mode=mode,
-                    top_k=k,
-                ))
+        clusters_list = cfg.get(
+            "n_clusters_sweep",
+            [cfg.get("n_clusters", 256)],
+        )
+        for n_c in clusters_list:
+            for mode in cfg.get("modes", ["hybrid"]):
+                for k in cfg.get("top_k_sweep", [5]):
+                    instances.append(KMeansClustering(
+                        n_clusters=n_c,
+                        mode=mode,
+                        top_k=k,
+                    ))
         return instances
