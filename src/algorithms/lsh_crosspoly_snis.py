@@ -231,28 +231,122 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
         return labels
 
     # ── inclusion probability ──────────────────────────
+    #
+    # Empirical collision tables measured on real Llama-3.1
+    # attention keys (code_run, layer 31, 5000 subsampled
+    # keys, 20 queries, L=300 tables). The asymptotic formula
+    # from Theorem 1 overestimates p_table by ~7x at practical
+    # dimensions, so we interpolate from measured data instead.
+    #
+    # Format: (cos_sim_array, p_table_array)
+
+    _COLLISION_TABLES = {
+        64: (
+            np.array([
+                -0.29, -0.27, -0.25, -0.23, -0.21,
+                -0.19, -0.17, -0.15, -0.13, -0.11,
+                -0.09, -0.07, -0.05, -0.03, -0.01,
+                 0.01,  0.03,  0.05,  0.07,  0.09,
+                 0.11,  0.13,  0.15,  0.17,  0.19,
+                 0.21,  0.23,  0.25,  0.27,  0.29,
+                 0.31,  0.33,  0.35,  0.37,  0.39,
+                 0.41,  0.43,  0.45,  0.47,  0.49,
+                 0.51,  0.53,  0.55,  0.99,
+            ]),
+            np.array([
+                0.0000000, 0.0000000, 0.0000000, 0.0000000,
+                0.0000037, 0.0000000, 0.0000019, 0.0000027,
+                0.0000051, 0.0000087, 0.0000110, 0.0000121,
+                0.0000223, 0.0000252, 0.0000418, 0.0000602,
+                0.0000806, 0.0000899, 0.0001001, 0.0001628,
+                0.0001944, 0.0002635, 0.0003316, 0.0004661,
+                0.0005582, 0.0005632, 0.0008113, 0.0010122,
+                0.0011682, 0.0014551, 0.0016636, 0.0021498,
+                0.0026464, 0.0030510, 0.0036791, 0.0041639,
+                0.0049686, 0.0061416, 0.0073883, 0.0082432,
+                0.0100794, 0.0125490, 0.0113636, 1.0000000,
+            ]),
+        ),
+        96: (
+            np.array([
+                -0.29, -0.27, -0.25, -0.23, -0.21,
+                -0.19, -0.17, -0.15, -0.13, -0.11,
+                -0.09, -0.07, -0.05, -0.03, -0.01,
+                 0.01,  0.03,  0.05,  0.07,  0.09,
+                 0.11,  0.13,  0.15,  0.17,  0.19,
+                 0.21,  0.23,  0.25,  0.27,  0.29,
+                 0.31,  0.33,  0.35,  0.37,  0.39,
+                 0.41,  0.43,  0.45,  0.47,  0.49,
+                 0.51,  0.53,  0.55,  0.99,
+            ]),
+            np.array([
+                0.0000000, 0.0000000, 0.0000000, 0.0000000,
+                0.0000012, 0.0000000, 0.0000000, 0.0000000,
+                0.0000000, 0.0000032, 0.0000024, 0.0000083,
+                0.0000096, 0.0000073, 0.0000180, 0.0000289,
+                0.0000364, 0.0000356, 0.0000555, 0.0000739,
+                0.0000996, 0.0001265, 0.0001686, 0.0002468,
+                0.0002719, 0.0003321, 0.0004250, 0.0005070,
+                0.0006075, 0.0008768, 0.0010409, 0.0013698,
+                0.0017151, 0.0017557, 0.0023670, 0.0026599,
+                0.0034277, 0.0048174, 0.0050859, 0.0062613,
+                0.0073016, 0.0092157, 0.0098485, 1.0000000,
+            ]),
+        ),
+        128: (
+            np.array([
+                -0.29, -0.27, -0.25, -0.23, -0.21,
+                -0.19, -0.17, -0.15, -0.13, -0.11,
+                -0.09, -0.07, -0.05, -0.03, -0.01,
+                 0.01,  0.03,  0.05,  0.07,  0.09,
+                 0.11,  0.13,  0.15,  0.17,  0.19,
+                 0.21,  0.23,  0.25,  0.27,  0.29,
+                 0.31,  0.33,  0.35,  0.37,  0.39,
+                 0.41,  0.43,  0.45,  0.47,  0.49,
+                 0.51,  0.53,  0.55,  0.99,
+            ]),
+            np.array([
+                0.0000000, 0.0000000, 0.0000000, 0.0000000,
+                0.0000012, 0.0000000, 0.0000000, 0.0000000,
+                0.0000000, 0.0000016, 0.0000008, 0.0000023,
+                0.0000032, 0.0000065, 0.0000098, 0.0000115,
+                0.0000147, 0.0000142, 0.0000300, 0.0000524,
+                0.0000561, 0.0000711, 0.0001264, 0.0001431,
+                0.0001699, 0.0002643, 0.0002828, 0.0003485,
+                0.0004526, 0.0006370, 0.0007156, 0.0010012,
+                0.0011710, 0.0011971, 0.0016667, 0.0019080,
+                0.0025629, 0.0032648, 0.0036426, 0.0047748,
+                0.0054762, 0.0073529, 0.0075758, 1.0000000,
+            ]),
+        ),
+    }
 
     def _compute_inclusion_prob(
         self, cos_sims: np.ndarray,
     ) -> np.ndarray:
         """
-        Inclusion probability from the CP collision formula.
+        Inclusion probability from empirical collision table.
 
-        Per-table collision probability (Theorem 1, Andoni+15):
-          rho = (1 - cos) / (1 + cos)
-          p_table = k^(-2 * rho)   [product of two k-dim CPs]
+        Per-table collision probability is looked up via linear
+        interpolation from measured data (see _COLLISION_TABLES).
+        The asymptotic Theorem 1 formula overestimates by ~7x
+        at d=128, so we use empirical measurements instead.
 
         Inclusion with min_hits=1:
           P(retrieved) = 1 - (1 - p_table)^L
         """
         L = self._L
-        k = float(self._k)
+        k = self._k
 
-        cos_sims = np.clip(
-            cos_sims, -1.0 + 1e-7, 1.0 - 1e-7,
-        )
-        rho = (1.0 - cos_sims) / (1.0 + cos_sims)
-        p_table = np.power(k, -2.0 * rho)
+        cos_sims = np.clip(cos_sims, -0.3, 0.99)
+
+        # Look up from empirical table, fall back to
+        # nearest available k_dim
+        available = sorted(self._COLLISION_TABLES.keys())
+        best_k = min(available, key=lambda x: abs(x - k))
+        cos_tab, p_tab = self._COLLISION_TABLES[best_k]
+
+        p_table = np.interp(cos_sims, cos_tab, p_tab)
         p_table = np.clip(p_table, 1e-30, 1.0)
 
         prob = 1.0 - np.power(1.0 - p_table, L)
