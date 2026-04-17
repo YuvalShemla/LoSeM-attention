@@ -90,7 +90,7 @@ evaluation:
 
   exclude_sink_token: true
   local_window:
-    size: 0
+    size: 100
 
   budget_sweep:
     absolute:
@@ -125,6 +125,12 @@ algorithm_configs:
     K_sweep: [8, 9, 10, 11, 12]
     L_sweep: [10, 50, 100, 150, 200, 300]
     min_hits: 2
+    center_keys: true
+  lsh_crosspoly_snis:
+    sweep:
+      64:  [10, 20, 50, 100, 150, 200]
+      96:  [20, 50, 100, 150, 200, 250]
+      128: [50, 100, 150, 200, 250, 300]
     center_keys: true
 
 # ── Plot Settings ──
@@ -164,6 +170,10 @@ plotting:
       topk: "#800080"
       hybrid: "#800080"
       marker: "X"
+    cp_snis:
+      topk: "#2196f3"
+      hybrid: "#2196f3"
+      marker: "P"
 
 
 # ══════════════════════════════════════════════════════

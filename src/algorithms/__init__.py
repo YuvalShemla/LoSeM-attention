@@ -19,6 +19,7 @@ from .kmeans_clustering import KMeansClustering
 from .lsh_crosspoly_multiprobe import LSHCrossPolytope
 from .lsh_crosspoly_clustered import LSHCrossPolytopeClustered
 from .lsh_simhash_snis import LSHSimHashSNIS
+from .lsh_crosspoly_snis import LSHCrossPolySNIS
 
 
 @dataclass
@@ -54,5 +55,8 @@ METHOD_REGISTRY = {
     ),
     "lsh_simhash_snis": MethodSpec(
         LSHSimHashSNIS, "algorithm",
+    ),
+    "lsh_crosspoly_snis": MethodSpec(
+        LSHCrossPolySNIS, "algorithm",
     ),
 }
