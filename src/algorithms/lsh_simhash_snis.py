@@ -1,13 +1,19 @@
 """
-SimHash LSH with SNIS correction (MagicPIG-style).
+SimHash LSH with importance sampling correction.
+
+Two variants:
+  - SNIS (Z'): Self-Normalized IS -- softmax over retrieved keys
+    with logit correction -log(u_i). The normalizer Z' is estimated
+    from the sample itself.
+  - IS (Z): Standard IS with the TRUE softmax normalizer Z computed
+    over ALL keys. Unbiased but potentially higher variance.
 
 Offline: center keys, build L SimHash tables with K random
 hyperplanes each, store per-key hash codes.
 
 Query: hash query, retrieve all keys colliding in >= min_hits
 tables, compute angle-based inclusion probabilities, apply
-Self-Normalized Importance Sampling for unbiased attention
-estimation.
+importance sampling for attention estimation.
 
 Each (K, L) combo produces a fixed (emergent) budget -- the
 number of retrieved keys depends on the data, not a budget
@@ -37,7 +43,6 @@ class LSHSimHashSNIS(AttentionAlgorithm):
         center_keys: whether to center keys before hashing (critical)
     """
 
-    # Class-level counter for sequential IDs
     _next_id = 0
 
     def __init__(
@@ -112,12 +117,10 @@ class LSHSimHashSNIS(AttentionAlgorithm):
             keys_c = keys.astype(np.float32)
 
         # Compute hash codes: sign of projection onto hyperplanes
-        # projections: [n, L*K]
         projections = keys_c @ hyperplanes.T  # [n, L*K]
         sign_bits = (projections >= 0)  # [n, L*K] bool
 
         # Pack K bits per table into uint32 hash codes
-        # Reshape to [n, L, K], then pack
         sign_bits = sign_bits.reshape(n, L, K)
         powers = (1 << np.arange(K, dtype=np.uint32))[np.newaxis, np.newaxis, :]
         self._key_codes = np.sum(
@@ -171,7 +174,6 @@ class LSHSimHashSNIS(AttentionAlgorithm):
         prob = 1.0 - np.power(q, L) - L * p_table * np.power(q, L - 1)
 
         if min_hits > 2:
-            # General case: sum binomial CDF terms
             from scipy.special import comb
             for h in range(2, min_hits):
                 prob -= comb(L, h) * np.power(p_table, h) * np.power(q, L - h)
@@ -187,16 +189,12 @@ class LSHSimHashSNIS(AttentionAlgorithm):
         if self._key_codes is None:
             raise RuntimeError("Call prepare() before run()")
 
-        K, L = self._K, self._L
-        min_hits = self._min_hits
         query = problem.query
         keys = problem.keys
         values = problem.values
         logits = problem.logits
-        head_dim = problem.head_dim
         special_idx = problem.special_idx
         candidate_idx = problem.candidate_idx
-        n_causal = len(keys)
 
         # Hash the query
         q_codes = self._hash_query(query)  # [L]
@@ -211,20 +209,17 @@ class LSHSimHashSNIS(AttentionAlgorithm):
             )
 
         # Get hash codes for candidate keys only
-        # key_codes is for the full sequence from prepare()
-        # but candidate_idx indexes into the causal window
         cand_codes = self._key_codes[candidate_idx]  # [n_cand, L]
 
-        # Count collisions: how many tables have matching hash codes
-        matches = (cand_codes == q_codes[np.newaxis, :])  # [n_cand, L]
-        match_counts = np.sum(matches, axis=1)  # [n_cand]
+        # Count collisions
+        matches = (cand_codes == q_codes[np.newaxis, :])
+        match_counts = np.sum(matches, axis=1)
 
         # Retrieve candidates with >= min_hits collisions
-        retrieved_mask = match_counts >= min_hits
+        retrieved_mask = match_counts >= self._min_hits
         retrieved_local = np.where(retrieved_mask)[0]
 
         if len(retrieved_local) == 0:
-            # No keys retrieved -- fall back to special-only
             from ..core import subset_attention
             output = subset_attention(logits, values, special_idx)
             return AttentionOutput(
@@ -236,7 +231,6 @@ class LSHSimHashSNIS(AttentionAlgorithm):
         retrieved_idx = candidate_idx[retrieved_local]
 
         # Compute cosine similarities for inclusion probabilities
-        # Use centered keys for angle computation (same as hashing)
         if self._center_keys:
             q_c = query.astype(np.float64) - self._key_mean.astype(np.float64)
             k_c = keys[retrieved_idx].astype(np.float64) - self._key_mean.astype(np.float64)
@@ -250,7 +244,6 @@ class LSHSimHashSNIS(AttentionAlgorithm):
 
         inclusion_probs = self._compute_inclusion_prob(cos_sims)
 
-        # SNIS attention: special keys exact, retrieved keys corrected
         output = snis_attention(
             logits=logits[retrieved_idx],
             values=values[retrieved_idx],
