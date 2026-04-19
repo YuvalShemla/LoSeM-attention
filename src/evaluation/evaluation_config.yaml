@@ -67,9 +67,12 @@ tasks:
 # n_examples is strict: if a task has fewer examples
 # on disk than requested, the run fails immediately.
 
+skip_idealized:
+  - ideal_equal_splits
+
 evaluation:
   seed: 42
-  n_queries: 10         # query positions per example (last N tokens)
+  n_queries: 1          # query positions per example (last N tokens)
   n_examples: 1         # examples per task (strict)
   use_rope: true        # false to use pre-RoPE (raw) Q and K
 
@@ -102,6 +105,7 @@ evaluation:
       - 512
       - 1024
       - 2048
+      - 4096
 
 
 # ── Algorithm Parameter Sweeps ──
@@ -128,10 +132,12 @@ algorithm_configs:
     center_keys: true
   lsh_crosspoly_snis:
     sweep:
-      64:  [10, 20, 50, 100, 150, 200]
-      96:  [20, 50, 100, 150, 200, 250]
       128: [50, 100, 150, 200, 250, 300]
     center_keys: true
+  kmeans_value:
+    n_clusters_sweep: [128, 512, 1024, 2048, 4096]
+  kmeans_key:
+    n_clusters_sweep: [128, 512, 1024, 2048, 4096]
 
 # ── Plot Settings ──
 plotting:
@@ -174,6 +180,14 @@ plotting:
       topk: "#2196f3"
       hybrid: "#2196f3"
       marker: "P"
+    kmeans_value:
+      topk: "#e91e63"
+      hybrid: "#e91e63"
+      marker: "v"
+    kmeans_key:
+      topk: "#00897b"
+      hybrid: "#00897b"
+      marker: "^"
 
 
 # ══════════════════════════════════════════════════════
