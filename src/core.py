@@ -405,6 +405,7 @@ def flat_kmeans(
         np.minimum(min_dists, new_d, out=min_dists)
         np.maximum(min_dists, 0.0, out=min_dists)
         probs = min_dists / (min_dists.sum() + 1e-10)
+        probs = probs / probs.sum()
         centroids[c] = data[rng.choice(N, p=probs)]
 
     labels = np.zeros(N, dtype=np.int32)

@@ -20,6 +20,11 @@ from .lsh_crosspoly_multiprobe import LSHCrossPolytope
 from .lsh_crosspoly_clustered import LSHCrossPolytopeClustered
 from .lsh_simhash_snis import LSHSimHashSNIS
 from .lsh_crosspoly_snis import LSHCrossPolySNIS
+from .kmeans_value_clustering import (
+    KMeansValueClustering,
+    KMeansKeyClustering,
+)
+from .value_cluster_is import ValueClusterIS
 
 
 @dataclass
@@ -58,5 +63,14 @@ METHOD_REGISTRY = {
     ),
     "lsh_crosspoly_snis": MethodSpec(
         LSHCrossPolySNIS, "algorithm",
+    ),
+    "kmeans_value": MethodSpec(
+        KMeansValueClustering, "algorithm",
+    ),
+    "kmeans_key": MethodSpec(
+        KMeansKeyClustering, "algorithm",
+    ),
+    "value_cluster_is": MethodSpec(
+        ValueClusterIS, "algorithm",
     ),
 }

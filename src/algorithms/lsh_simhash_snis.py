@@ -71,7 +71,8 @@ class LSHSimHashSNIS(AttentionAlgorithm):
 
     @property
     def point_label(self) -> str:
-        return f"{self._K}/{self._L}"
+        C = 2 ** self._K
+        return f"C{C}/L{self._L}"
 
     @property
     def sweeps_budget(self) -> bool:

@@ -147,12 +147,15 @@ def replay_plots(results_dir: Path) -> None:
         with open(agg_path) as f:
             agg = json.load(f)
 
-        # Inject point labels from algorithm instances
+        # Inject point labels and flags from algorithm instances
         for m in algorithms:
             if m.point_label and m.name in agg:
                 agg[m.name]["point_label"] = (
                     m.point_label
                 )
+            if (getattr(m, "horizontal_line", False)
+                    and m.name in agg):
+                agg[m.name]["horizontal_line"] = True
 
         per_task_agg[task] = agg
 
@@ -363,8 +366,13 @@ class Evaluation:
         rng = np.random.default_rng(self.seed)
 
         idealized = []
-        for spec in METHOD_REGISTRY.values():
+        skip_idealized = set(
+            self.config.get("skip_idealized", [])
+        )
+        for name, spec in METHOD_REGISTRY.items():
             if spec.kind == "idealized":
+                if name in skip_idealized:
+                    continue
                 idealized.extend(
                     spec.cls.expand_from_config({})
                 )
@@ -682,6 +690,11 @@ class Evaluation:
                     head_agg[m.name]["point_label"] = (
                         m.point_label
                     )
+                if (getattr(m, "horizontal_line", False)
+                        and m.name in head_agg):
+                    head_agg[m.name]["horizontal_line"] = (
+                        True
+                    )
             per_head_aggs[idx] = {
                 "agg": head_agg,
                 "layer": l, "q_head": h,
@@ -734,12 +747,15 @@ class Evaluation:
         else:
             agg = aggregate_results(all_results)
 
-        # Inject point labels for plot annotations
+        # Inject point labels and horizontal_line flags
         for m in methods:
             if m.point_label and m.name in agg:
                 agg[m.name]["point_label"] = (
                     m.point_label
                 )
+            if (getattr(m, "horizontal_line", False)
+                    and m.name in agg):
+                agg[m.name]["horizontal_line"] = True
 
         unique_lens = sorted(set(seq_lens))
         if len(unique_lens) == 1:
