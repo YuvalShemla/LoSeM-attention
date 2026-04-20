@@ -1,19 +1,25 @@
 """
-SimHash LSH with importance sampling correction.
+SimHash LSH with Self-Normalized Importance Sampling (SNIS).
 
-Two variants:
-  - SNIS (Z'): Self-Normalized IS -- softmax over retrieved keys
-    with logit correction -log(u_i). The normalizer Z' is estimated
-    from the sample itself.
-  - IS (Z): Standard IS with the TRUE softmax normalizer Z computed
-    over ALL keys. Unbiased but potentially higher variance.
+SimHash hashes vectors by the signs of their projections onto
+K random hyperplanes, producing 2^K buckets per table. Keys
+that share the same K-bit hash code as the query in at least
+min_hits out of L tables are retrieved.
 
-Offline: center keys, build L SimHash tables with K random
-hyperplanes each, store per-key hash codes.
+The collision probability has an exact closed-form formula:
+  p_bit  = 1 - arccos(cos_sim) / pi
+  p_table = p_bit^K
 
-Query: hash query, retrieve all keys colliding in >= min_hits
-tables, compute angle-based inclusion probabilities, apply
-importance sampling for attention estimation.
+This is used to compute per-key inclusion probabilities for
+the SNIS estimator, which corrects for the non-uniform
+retrieval by shifting logits: softmax(logit_i - log(u_i)).
+
+Offline: center keys, build L tables with K hyperplanes each,
+store per-key hash codes as packed uint32.
+
+Query: hash query, retrieve keys with >= min_hits collisions,
+compute inclusion probabilities from the exact formula, apply
+SNIS for attention estimation.
 
 Each (K, L) combo produces a fixed (emergent) budget -- the
 number of retrieved keys depends on the data, not a budget
@@ -36,11 +42,18 @@ class LSHSimHashSNIS(AttentionAlgorithm):
     """
     SimHash LSH with SNIS correction.
 
-    Parameters:
-        K: number of hash bits per table (hash depth)
-        L: number of independent hash tables
-        min_hits: minimum number of table collisions to retrieve a key
-        center_keys: whether to center keys before hashing (critical)
+    Args:
+        K: number of hash bits per table. Controls bucket
+           count C = 2^K (e.g. K=9 → 512 buckets).
+        L: number of independent hash tables.
+        min_hits: minimum table collisions to retrieve a key.
+        center_keys: subtract mean key vector before hashing.
+
+    Returns (from run()):
+        AttentionOutput with:
+          output: [d] SNIS-corrected attention vector
+          actual_budget: number of keys used (special + retrieved)
+          selected_indices: indices of all keys used
     """
 
     _next_id = 0
@@ -87,15 +100,29 @@ class LSHSimHashSNIS(AttentionAlgorithm):
         query_positions: Optional[List[int]] = None,
         seed: int = 42,
     ) -> None:
+        """Build L hash tables from the key vectors.
+
+        For each table, K random hyperplanes partition the
+        space into 2^K buckets. Each key's hash code is the
+        K sign bits packed into a uint32.
+
+        Args:
+            keys: [n, d] key vectors (pre-RoPE or post-RoPE)
+            values: [n, d] value vectors (stored but not hashed)
+            head_dim: dimension d of key/query vectors
+            seed: RNG seed for reproducible hyperplanes
+
+        Returns:
+            None (populates self._hyperplanes, self._key_codes)
+        """
         self._d = head_dim
         K, L = self._K, self._L
         rng = np.random.default_rng(seed)
 
-        # Generate L*K random hyperplanes
+        # L*K random unit hyperplanes — each defines a sign test
         hyperplanes = rng.standard_normal(
             (L * K, head_dim),
         ).astype(np.float32)
-        # Normalize rows for cleaner angle computation
         norms = np.linalg.norm(hyperplanes, axis=1, keepdims=True)
         hyperplanes /= np.maximum(norms, 1e-10)
         self._hyperplanes = hyperplanes
@@ -106,7 +133,8 @@ class LSHSimHashSNIS(AttentionAlgorithm):
             self._key_mean = np.zeros(head_dim, dtype=np.float32)
             return
 
-        # Center keys (critical per MagicPIG paper)
+        # Center keys — removes shared component so the hash
+        # is sensitive to angular differences between keys
         key_mean = np.mean(
             keys, axis=0, dtype=np.float64,
         ).astype(np.float32)
@@ -117,11 +145,11 @@ class LSHSimHashSNIS(AttentionAlgorithm):
         else:
             keys_c = keys.astype(np.float32)
 
-        # Compute hash codes: sign of projection onto hyperplanes
+        # Project all keys onto all hyperplanes in one matmul
         projections = keys_c @ hyperplanes.T  # [n, L*K]
         sign_bits = (projections >= 0)  # [n, L*K] bool
 
-        # Pack K bits per table into uint32 hash codes
+        # Pack K sign bits per table into a uint32 hash code
         sign_bits = sign_bits.reshape(n, L, K)
         powers = (1 << np.arange(K, dtype=np.uint32))[np.newaxis, np.newaxis, :]
         self._key_codes = np.sum(
@@ -131,7 +159,14 @@ class LSHSimHashSNIS(AttentionAlgorithm):
     def _hash_query(
         self, query: np.ndarray,
     ) -> np.ndarray:
-        """Hash a single query vector. Returns [L] uint32 codes."""
+        """Hash a single query vector.
+
+        Args:
+            query: [d] query vector
+
+        Returns:
+            [L] uint32 hash codes, one per table
+        """
         K, L = self._K, self._L
 
         if self._center_keys:
@@ -149,28 +184,37 @@ class LSHSimHashSNIS(AttentionAlgorithm):
     def _compute_inclusion_prob(
         self, cos_sims: np.ndarray,
     ) -> np.ndarray:
-        """
-        Compute SimHash inclusion probability for min_hits collisions.
+        """Compute inclusion probability from the exact formula.
 
-        For SimHash: p_bit = 1 - theta/pi where theta = arccos(cos_sim).
-        P(collision in one table) = p_bit^K
-        P(retrieved) = 1 - P(0 hits) - P(1 hit) - ... - P(min_hits-1 hits)
+        SimHash collision probability per table is exact:
+          p_bit   = 1 - arccos(cos_sim) / pi
+          p_table = p_bit^K
 
-        For min_hits=2:
-          P = 1 - (1-p)^L - L*p*(1-p)^(L-1)
+        Inclusion probability (Binomial CDF complement):
+          P(hits >= min_hits out of L tables)
+
+        Args:
+            cos_sims: [n] cosine similarities between centered
+                      query and each retrieved key
+
+        Returns:
+            [n] inclusion probabilities in (0, 1]
         """
         K, L = self._K, self._L
         min_hits = self._min_hits
 
         cos_sims = np.clip(cos_sims, -1.0 + 1e-7, 1.0 - 1e-7)
         thetas = np.arccos(cos_sims)
+        # Each bit agrees with prob 1 - theta/pi
         p_bit = 1.0 - thetas / np.pi
+        # All K bits agree → same bucket
         p_table = np.power(p_bit, K)
 
         if min_hits == 1:
+            # P(at least 1 hit) = 1 - P(0 hits)
             return np.clip(1.0 - np.power(1.0 - p_table, L), 1e-30, 1.0)
 
-        # min_hits == 2 (standard MagicPIG)
+        # P(>= min_hits) = 1 - sum_{h=0}^{min_hits-1} Binom(L,h)*p^h*(1-p)^{L-h}
         q = 1.0 - p_table
         prob = 1.0 - np.power(q, L) - L * p_table * np.power(q, L - 1)
 
@@ -187,6 +231,22 @@ class LSHSimHashSNIS(AttentionAlgorithm):
         budget: int,
         rng: np.random.Generator,
     ) -> AttentionOutput:
+        """Retrieve keys via SimHash and compute SNIS attention.
+
+        Steps:
+          1. Hash query into L tables
+          2. Find candidate keys with >= min_hits collisions
+          3. Compute cosine similarity → inclusion probability
+          4. Apply SNIS: softmax(logit_i - log(u_i)) @ v_i
+
+        Args:
+            problem: query, keys, values, logits, special/candidate split
+            budget: ignored (budget is emergent from hash parameters)
+            rng: not used (deterministic hashing)
+
+        Returns:
+            AttentionOutput with SNIS-corrected attention vector
+        """
         if self._key_codes is None:
             raise RuntimeError("Call prepare() before run()")
 
@@ -197,10 +257,8 @@ class LSHSimHashSNIS(AttentionAlgorithm):
         special_idx = problem.special_idx
         candidate_idx = problem.candidate_idx
 
-        # Hash the query
         q_codes = self._hash_query(query)  # [L]
 
-        # Only search among candidate keys (exclude special)
         if len(candidate_idx) == 0:
             from ..core import subset_attention
             output = subset_attention(logits, values, special_idx)
@@ -209,14 +267,12 @@ class LSHSimHashSNIS(AttentionAlgorithm):
                 actual_budget=len(special_idx),
             )
 
-        # Get hash codes for candidate keys only
+        # Count per-key collisions across L tables
         cand_codes = self._key_codes[candidate_idx]  # [n_cand, L]
-
-        # Count collisions
         matches = (cand_codes == q_codes[np.newaxis, :])
         match_counts = np.sum(matches, axis=1)
 
-        # Retrieve candidates with >= min_hits collisions
+        # Retrieve keys with enough collisions
         retrieved_mask = match_counts >= self._min_hits
         retrieved_local = np.where(retrieved_mask)[0]
 
@@ -228,10 +284,10 @@ class LSHSimHashSNIS(AttentionAlgorithm):
                 actual_budget=len(special_idx),
             )
 
-        # Map back to global indices
         retrieved_idx = candidate_idx[retrieved_local]
 
-        # Compute cosine similarities for inclusion probabilities
+        # Cosine similarity between centered query and keys
+        # (needed for the inclusion probability formula)
         if self._center_keys:
             q_c = query.astype(np.float64) - self._key_mean.astype(np.float64)
             k_c = keys[retrieved_idx].astype(np.float64) - self._key_mean.astype(np.float64)
@@ -245,6 +301,7 @@ class LSHSimHashSNIS(AttentionAlgorithm):
 
         inclusion_probs = self._compute_inclusion_prob(cos_sims)
 
+        # SNIS: softmax(logit - log(u)) @ values
         output = snis_attention(
             logits=logits[retrieved_idx],
             values=values[retrieved_idx],
