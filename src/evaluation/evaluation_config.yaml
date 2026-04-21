@@ -69,7 +69,7 @@ tasks:
 
 evaluation:
   seed: 42
-  n_queries: 10         # query positions per example (last N tokens)
+  n_queries: 1         # query positions per example (last N tokens)
   n_examples: 1         # examples per task (strict)
 
   # Compute per-query attention statistics (entropy,
@@ -78,29 +78,36 @@ evaluation:
   # Saved in per_task/*/data_statistics.json.
   compute_statistics: true
 
+  # If true, computes distributions of
+  # cos(key, group_mean_key) for methods that expose
+  # grouped members, then saves/plots per-task summaries.
+  compute_group_cosine_distribution: true
+  group_cosine_distribution_bins: 50
+
   head_mode: "selected_heads"
+#  head_mode: "custom"
 
   # Used only when head_mode is "all_heads".
   layers: "all"                # or "all" for every layer
 
   # Used only when head_mode is "custom".
   custom_heads:
-    - {layer: 17, q_head: 0, kv_head: 0}
+    - {layer: 0, q_head: 22, kv_head: 5}
 
   exclude_sink_token: true
   local_window:
-    size: 0
+    size: 100
 
   budget_sweep:
     absolute:
-      - 16
-      - 32
-      - 64
-      - 128
+#      - 16
+#      - 32
+#      - 64
+#      - 128
       - 256
-      - 512
-      - 1024
-      - 2048
+#      - 512
+#      - 1024
+#      - 2048
 
 
 # ── Algorithm Parameter Sweeps ──
@@ -122,6 +129,10 @@ algorithm_configs:
 plotting:
   figsize: [16, 10]
   dpi: 200
+  # Ordering for group_token_probability_table:
+  # - group_then_key: groups by decreasing e^{l_g}, then keys in-group by e^{l_i}/Z
+  # - key_logit: all keys globally by decreasing e^{l_i}/Z
+  group_token_probability_order: "group_then_key"
   log_scale: true
   linear_scale: true
   idealized_linestyle: "--"
