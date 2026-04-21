@@ -280,6 +280,7 @@ class IdealEqualSplits(AttentionAlgorithm):
         return AttentionOutput(
             output=output,
             actual_budget=n_total,
+            grouped_member_indices=groups,
         )
 
     @staticmethod
@@ -366,6 +367,7 @@ class IdealEqualWeightSplits(AttentionAlgorithm):
         return AttentionOutput(
             output=output,
             actual_budget=n_total,
+            grouped_member_indices=groups,
         )
 
     @staticmethod
