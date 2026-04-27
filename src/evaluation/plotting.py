@@ -436,7 +436,10 @@ def plot_idealized_methods(
 
     idealized_specs = [
         ("IdealTopK", "Ideal TopK"),
-        ("IdealSampling", "Ideal Sampling"),
+        ("IdealSampling-Subset", "Ideal Sampling (Subset)"),
+        ("IdealSampling-IS", "Ideal Sampling (IS)"),
+        ("IdealTopK+Uniform", "Ideal TopK+Uniform"),
+        ("vAttention(oracle)", "vAttention(oracle)"),
         ("IdealEqualWeightSplits",
          "Ideal Equal Weight Splits"),
         ("EWS+NoiseK", "EWS+NoiseK"),
@@ -448,7 +451,10 @@ def plot_idealized_methods(
     ]
     default_colors = {
         "IdealTopK": "#d62728",
-        "IdealSampling": "#2ca02c",
+        "IdealSampling-Subset": "#2ca02c",
+        "IdealSampling-IS": "#17becf",
+        "IdealTopK+Uniform": "#ff6f00",
+        "vAttention(oracle)": "#ff1493",  # hot pink
         "IdealEqualSplits": "#1f77b4",
         "IdealEqualWeightSplits": "#9467bd",
         "EWS+NoiseK": "#00bfff",
@@ -873,11 +879,17 @@ def plot_overview(
             squeeze=False,
         )
 
+        algo_prefixes = {
+            fam["prefix"] for fam in algorithm_families
+        }
         for i, task in enumerate(tasks):
             r, c = divmod(i, cols)
             ax = axes[r][c]
             agg = per_task_agg[task]
-            plot_idealized_methods(ax, agg, budgets, plot_cfg)
+            plot_idealized_methods(
+                ax, agg, budgets, plot_cfg,
+                skip_prefixes=algo_prefixes,
+            )
             for fam in algorithm_families:
                 plot_algorithm_family(
                     ax, agg,
@@ -1049,6 +1061,9 @@ def plot_per_head_comparison(
             squeeze=False,
         )
 
+        algo_prefixes = {
+            fam["prefix"] for fam in algorithm_families
+        }
         for i, idx in enumerate(sorted_idxs):
             r, c = divmod(i, cols)
             ax = axes[r][c]
@@ -1057,6 +1072,7 @@ def plot_per_head_comparison(
 
             plot_idealized_methods(
                 ax, agg, budgets, plot_cfg,
+                skip_prefixes=algo_prefixes,
             )
             for fam in algorithm_families:
                 plot_algorithm_family(

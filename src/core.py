@@ -352,7 +352,7 @@ def cached_flat_kmeans(
     data: np.ndarray,
     C: int,
     seed: int = 42,
-    n_iter: int = 20,
+    n_iter: int = 50,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Cached wrapper around flat_kmeans.
@@ -378,7 +378,7 @@ def flat_kmeans(
     data: np.ndarray,
     C: int,
     seed: int = 42,
-    n_iter: int = 20,
+    n_iter: int = 50,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     K-means with k-means++ init (numpy only).

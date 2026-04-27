@@ -145,22 +145,16 @@ class IdealTopK(AttentionAlgorithm):
         return [IdealTopK()]
 
 
-class IdealSampling(AttentionAlgorithm):
+class IdealSamplingSubset(AttentionAlgorithm):
     """
-    Always include special keys (sink + local window),
-    then sample `budget` additional candidates
-    proportional to the candidate-only attention
-    distribution. Renormalize softmax over the union.
-
-    Consistent with IdealTopK: both always include
-    special keys and select `budget` candidates on top.
-    TopK picks the highest-logit candidates; Sampling
-    draws from the renormalized candidate distribution.
+    Sample B candidates proportional to true attention
+    weights, then renormalize softmax over the selected
+    subset (special + sampled). Classic subset attention.
     """
 
     @property
     def name(self) -> str:
-        return "IdealSampling"
+        return "IdealSampling-Subset"
 
     @property
     def kind(self) -> str:
@@ -217,7 +211,340 @@ class IdealSampling(AttentionAlgorithm):
 
     @staticmethod
     def expand_from_config(cfg: dict) -> list:
-        return [IdealSampling()]
+        return [IdealSamplingSubset()]
+
+
+class IdealSamplingIS(AttentionAlgorithm):
+    """
+    Sample B candidates proportional to true attention
+    weights. Because p_i = w_i, the IS weights cancel:
+      candidate contribution = W_cand · (1/B) Σ v_j
+
+    Special keys get exact w_i · v_i contribution.
+    Zero-variance estimator for the numerator; only
+    sampling noise in the value average remains.
+    """
+
+    @property
+    def name(self) -> str:
+        return "IdealSampling-IS"
+
+    @property
+    def kind(self) -> str:
+        return "idealized"
+
+    @property
+    def sweeps_budget(self) -> bool:
+        return True
+
+    def run(
+        self,
+        problem: AttentionInput,
+        budget: int,
+        rng: np.random.Generator,
+    ) -> AttentionOutput:
+        logits = problem.logits
+        values = problem.values
+        special_idx = problem.special_idx
+        candidate_idx = problem.candidate_idx
+        n_cand = len(candidate_idx)
+
+        if n_cand == 0:
+            output = subset_attention(
+                logits, values, special_idx,
+            )
+            return AttentionOutput(
+                output=output,
+                actual_budget=len(special_idx),
+                selected_indices=special_idx,
+            )
+
+        buse = min(budget, n_cand)
+
+        # Full attention weights (over all keys)
+        all_w = softmax(logits).astype(np.float64)
+
+        # Sample candidates proportional to their weights
+        cand_w = all_w[candidate_idx]
+        cand_w_sum = cand_w.sum()
+        if cand_w_sum < 1e-30:
+            probs = np.ones(n_cand) / n_cand
+        else:
+            probs = cand_w / cand_w_sum
+
+        chosen = rng.choice(
+            n_cand, size=buse,
+            p=probs, replace=False,
+        )
+        sampled_idx = candidate_idx[chosen]
+
+        # IS with weight cancellation:
+        # Special: exact w_i · v_i
+        # Candidates: W_cand · (1/B) · Σ v_j
+        d = values.shape[1]
+        output = np.zeros(d, dtype=np.float64)
+
+        # Special contribution (exact)
+        output += (
+            all_w[special_idx][:, None]
+            * values[special_idx].astype(np.float64)
+        ).sum(axis=0)
+
+        # Candidate contribution (IS, weights cancel)
+        avg_v = np.mean(
+            values[sampled_idx].astype(np.float64),
+            axis=0,
+        )
+        output += cand_w_sum * avg_v
+
+        return AttentionOutput(
+            output=output.astype(np.float32),
+            actual_budget=len(special_idx) + buse,
+            selected_indices=np.concatenate([
+                special_idx, sampled_idx,
+            ]).astype(np.int64),
+        )
+
+    @staticmethod
+    def expand_from_config(cfg: dict) -> list:
+        return [IdealSamplingIS()]
+
+
+class IdealTopKPlusUniform(AttentionAlgorithm):
+    """
+    Half budget → top-B/2 keys by logit.
+    Other half → B/2 keys sampled uniformly at random
+    from the remaining candidates.
+    Subset attention over the union + special.
+    """
+
+    @property
+    def name(self) -> str:
+        return "IdealTopK+Uniform"
+
+    @property
+    def kind(self) -> str:
+        return "idealized"
+
+    @property
+    def sweeps_budget(self) -> bool:
+        return True
+
+    def run(
+        self,
+        problem: AttentionInput,
+        budget: int,
+        rng: np.random.Generator,
+    ) -> AttentionOutput:
+        logits = problem.logits
+        values = problem.values
+        special_idx = problem.special_idx
+        candidate_idx = problem.candidate_idx
+        n_cand = len(candidate_idx)
+
+        if n_cand == 0:
+            output = subset_attention(
+                logits, values, special_idx,
+            )
+            return AttentionOutput(
+                output=output,
+                actual_budget=len(special_idx),
+                selected_indices=special_idx,
+            )
+
+        buse = min(budget, n_cand)
+        b_topk = buse // 2
+        b_uniform = buse - b_topk
+
+        # Top-K half
+        cand_logits = logits[candidate_idx]
+        if b_topk > 0 and b_topk < n_cand:
+            top_pos = np.argpartition(
+                cand_logits, -b_topk,
+            )[-b_topk:]
+        elif b_topk >= n_cand:
+            top_pos = np.arange(n_cand)
+        else:
+            top_pos = np.array([], dtype=np.int64)
+
+        # Uniform half from remaining
+        remaining_mask = np.ones(n_cand, dtype=bool)
+        remaining_mask[top_pos] = False
+        remaining_pos = np.where(remaining_mask)[0]
+
+        if b_uniform > 0 and len(remaining_pos) > 0:
+            n_sample = min(b_uniform, len(remaining_pos))
+            uniform_pos = rng.choice(
+                remaining_pos, size=n_sample,
+                replace=False,
+            )
+        else:
+            uniform_pos = np.array([], dtype=np.int64)
+
+        selected_local = np.concatenate(
+            [top_pos, uniform_pos],
+        ).astype(np.int64)
+        selected_global = candidate_idx[selected_local]
+
+        all_idx = np.concatenate(
+            [special_idx, selected_global],
+        ).astype(np.int64)
+        output = subset_attention(
+            logits, values, all_idx,
+        )
+
+        return AttentionOutput(
+            output=output,
+            actual_budget=len(all_idx),
+            selected_indices=all_idx,
+        )
+
+    @staticmethod
+    def expand_from_config(cfg: dict) -> list:
+        return [IdealTopKPlusUniform()]
+
+
+class VAttentionOracle(AttentionAlgorithm):
+    """
+    vAttention (Desai et al. 2025) with oracle top-k.
+
+    Splits the budget in half:
+      - Half for oracle top-k (highest logit candidates)
+      - Half for uniform random sampling from the rest
+
+    Uses IS-corrected attention (Eq. 5 from the paper):
+      N = Σ_{fixed} exp(s_i)·V[i] + (n_s/b)·Σ_{sampled} exp(s_j)·V[j]
+      D = Σ_{fixed} exp(s_i)       + (n_s/b)·Σ_{sampled} exp(s_j)
+      Output = N / D
+
+    This estimates the FULL denominator (not renormalized
+    subset softmax), reducing bias from missing tokens.
+    Fixed tokens = special (sink + local) + top-k.
+    """
+
+    @property
+    def name(self) -> str:
+        return "vAttention(oracle)"
+
+    @property
+    def kind(self) -> str:
+        return "idealized"
+
+    @property
+    def sweeps_budget(self) -> bool:
+        return True
+
+    def run(
+        self,
+        problem: AttentionInput,
+        budget: int,
+        rng: np.random.Generator,
+    ) -> AttentionOutput:
+        logits = problem.logits
+        values = problem.values
+        special_idx = problem.special_idx
+        candidate_idx = problem.candidate_idx
+        n_cand = len(candidate_idx)
+
+        if n_cand == 0:
+            output = subset_attention(
+                logits, values, special_idx,
+            )
+            return AttentionOutput(
+                output=output,
+                actual_budget=len(special_idx),
+                selected_indices=special_idx,
+            )
+
+        buse = min(budget, n_cand)
+        b_topk = buse // 2
+        b_sample = buse - b_topk
+
+        # Oracle top-k half
+        cand_logits = logits[candidate_idx]
+        if b_topk > 0 and b_topk < n_cand:
+            top_pos = np.argpartition(
+                cand_logits, -b_topk,
+            )[-b_topk:]
+        elif b_topk >= n_cand:
+            top_pos = np.arange(n_cand)
+        else:
+            top_pos = np.array([], dtype=np.int64)
+
+        # Uniform sample from remaining
+        remaining_mask = np.ones(n_cand, dtype=bool)
+        if len(top_pos) > 0:
+            remaining_mask[top_pos] = False
+        remaining_pos = np.where(remaining_mask)[0]
+        n_s = len(remaining_pos)  # residual pool size
+
+        if b_sample > 0 and n_s > 0:
+            n_sample = min(b_sample, n_s)
+            sampled_pos = rng.choice(
+                remaining_pos, size=n_sample,
+                replace=False,
+            )
+        else:
+            sampled_pos = np.array([], dtype=np.int64)
+            n_sample = 0
+
+        # Global indices
+        topk_global = candidate_idx[top_pos]
+        sampled_global = candidate_idx[sampled_pos]
+        fixed_idx = np.concatenate(
+            [special_idx, topk_global],
+        ).astype(np.int64)
+
+        # IS-corrected attention (vAttention Eq. 5)
+        # Numerical stability: subtract max logit
+        all_logits = np.concatenate([
+            logits[fixed_idx],
+            logits[sampled_global],
+        ]).astype(np.float64)
+        s_max = np.max(all_logits) if len(all_logits) > 0 else 0.0
+
+        d = values.shape[1]
+
+        # Fixed part: exp(s_i - s_max)
+        fixed_s = logits[fixed_idx].astype(np.float64)
+        fixed_exp = np.exp(fixed_s - s_max)
+        N_f = (
+            fixed_exp[:, None]
+            * values[fixed_idx].astype(np.float64)
+        ).sum(axis=0)
+        D_f = fixed_exp.sum()
+
+        # Sampled part: (n_s / b) * exp(s_j - s_max)
+        if n_sample > 0 and n_s > 0:
+            samp_s = logits[sampled_global].astype(np.float64)
+            samp_exp = np.exp(samp_s - s_max)
+            weight = float(n_s) / float(n_sample)
+            N_dyn = weight * (
+                samp_exp[:, None]
+                * values[sampled_global].astype(np.float64)
+            ).sum(axis=0)
+            D_dyn = weight * samp_exp.sum()
+        else:
+            N_dyn = np.zeros(d, dtype=np.float64)
+            D_dyn = 0.0
+
+        D_total = D_f + D_dyn
+        if D_total < 1e-30:
+            output = np.zeros(d, dtype=np.float32)
+        else:
+            output = ((N_f + N_dyn) / D_total).astype(
+                np.float32,
+            )
+
+        actual_budget = len(fixed_idx) + n_sample
+        return AttentionOutput(
+            output=output,
+            actual_budget=actual_budget,
+        )
+
+    @staticmethod
+    def expand_from_config(cfg: dict) -> list:
+        return [VAttentionOracle()]
 
 
 class IdealEqualSplits(AttentionAlgorithm):

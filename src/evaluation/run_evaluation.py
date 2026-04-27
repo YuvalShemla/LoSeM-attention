@@ -104,9 +104,16 @@ def build_algorithm_plot_families(algorithms, config: dict):
         # Check for prefix-specific color key first
         # (e.g. "lsh_crosspoly_cc" for a variant),
         # then fall back to the registry name.
-        pfx_key = pfx.lower().replace("-", "_")
+        # Normalize: lower, replace - and + with _,
+        # strip trailing _c{digits} for cluster count.
+        pfx_key = pfx.lower().replace("-", "_").replace("+", "_")
+        pfx_key_short = re.sub(r"_c\d+$", "", pfx_key)
         c = color_map.get(
-            pfx_key, color_map.get(algo_name, {}),
+            pfx_key,
+            color_map.get(
+                pfx_key_short,
+                color_map.get(algo_name, {}),
+            ),
         )
         tk_sweep = config.get(
             "algorithm_configs", {}
