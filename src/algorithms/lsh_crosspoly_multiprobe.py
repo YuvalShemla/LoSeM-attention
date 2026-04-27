@@ -1,13 +1,5 @@
 """
 LSH Cross-Polytope: 2 independent CP hashes, multi-probe query.
-
-Offline: center keys, apply two random rotations R1/R2,
-cross-polytope hash giving (2d)^2 non-sink buckets + 1 sink.
-Compute mean key/value per bucket.
-
-Query: hash q, rank buckets by collision probability
-(multi-probe LSH), probe top `budget`, importance-weighted
-softmax for unbiased estimation.
 """
 
 import warnings
@@ -31,10 +23,7 @@ def _random_orthogonal(
 
 
 def crosspolytope_bucket_labels(Z: np.ndarray) -> np.ndarray:
-    """
-    Z: [n, d] -> bucket ids in {0, ..., 2d-1}.
-    Assigns each row to the nearest cross-polytope vertex.
-    """
+    """Assign each row in Z to one of 2d CP vertices."""
     abs_z = np.abs(Z)
     i = np.argmax(abs_z, axis=1).astype(np.int64)
     n = len(Z)
@@ -44,10 +33,7 @@ def crosspolytope_bucket_labels(Z: np.ndarray) -> np.ndarray:
 
 
 def _cp_vertex_scores(z: np.ndarray) -> np.ndarray:
-    """
-    Cross-polytope vertex dot-products for z in R^d.
-    Returns 2d values: score[2j] = z[j], score[2j+1] = -z[j].
-    """
+    """Return 2d CP vertex scores for a projected query z."""
     d = len(z)
     s = np.empty(2 * d, dtype=z.dtype)
     s[0::2] = z
@@ -56,7 +42,7 @@ def _cp_vertex_scores(z: np.ndarray) -> np.ndarray:
 
 
 def _bucket_means(keys, values, labels, n_buckets):
-    """Per-bucket mean keys/values via np.bincount (fast)."""
+    """Per-bucket mean keys/values via np.bincount."""
     lab = labels.astype(np.intp)
     d_k = keys.shape[1]
     d_v = values.shape[1]
@@ -92,11 +78,7 @@ def _bucket_means(keys, values, labels, n_buckets):
 
 
 class LSHCrossPolytope(AttentionAlgorithm):
-    """
-    2 iid cross-polytope hashes -> (2d)^2 + 1 buckets.
-    Sink (position 0) is always its own bucket.
-    Multi-probe query ordering with importance-weighted softmax.
-    """
+    """Repo/original multiprobe variant."""
 
     def __init__(
         self, name_suffix: str = "",
@@ -167,14 +149,12 @@ class LSHCrossPolytope(AttentionAlgorithm):
         ).astype(np.float32)
         self._key_mean = key_mean
         x_c = keys.astype(np.float32) - key_mean
-        R1 = self._R1.astype(np.float64)
-        R2 = self._R2.astype(np.float64)
         x64 = x_c.astype(np.float64)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            z1 = (x64 @ R1.T).astype(np.float32)
-            z2 = (x64 @ R2.T).astype(np.float32)
+            z1 = (x64 @ self._R1.astype(np.float64).T).astype(np.float32)
+            z2 = (x64 @ self._R2.astype(np.float64).T).astype(np.float32)
 
         n = len(keys)
         labels = np.empty(n, dtype=np.int64)
@@ -209,18 +189,14 @@ class LSHCrossPolytope(AttentionAlgorithm):
         counts = self._counts
         has_sink = counts[sink_b] > 0
 
-        # Hash query with same centering + rotations
         q_c = q - self._key_mean
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             z1_q = (self._R1 @ q_c).astype(np.float64)
             z2_q = (self._R2 @ q_c).astype(np.float64)
 
-        # Per-CP collision probabilities
         pi1 = softmax(_cp_vertex_scores(z1_q))
         pi2 = softmax(_cp_vertex_scores(z2_q))
-
-        # Nonempty non-sink buckets
         nonsink_ne = np.where(counts[:sink_b] > 0)[0]
 
         if len(nonsink_ne) == 0 and not has_sink:
@@ -232,7 +208,6 @@ class LSHCrossPolytope(AttentionAlgorithm):
                 actual_budget=0,
             )
 
-        # Multi-probe order: sort by pi1[b1]*pi2[b2] desc
         if len(nonsink_ne) > 0:
             b1_idx = nonsink_ne // n_cp
             b2_idx = nonsink_ne % n_cp
@@ -243,7 +218,6 @@ class LSHCrossPolytope(AttentionAlgorithm):
         else:
             pi_comb = np.empty(0, dtype=np.float64)
 
-        # Budget: sink always included
         cp_budget = max(
             0, budget - (1 if has_sink else 0),
         )
@@ -252,7 +226,6 @@ class LSHCrossPolytope(AttentionAlgorithm):
         probed = nonsink_ne[:n_probe]
         pi_probed = pi_comb[:n_probe]
 
-        # Assemble probed set
         if has_sink and n_probe > 0:
             all_idx = np.concatenate(
                 [[sink_b], probed],

@@ -119,6 +119,7 @@ class MultiQGrouping(AttentionAlgorithm):
         return AttentionOutput(
             output=output,
             actual_budget=eff_budget,
+            grouped_member_indices=groups,
         )
 
     @staticmethod

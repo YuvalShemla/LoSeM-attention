@@ -28,13 +28,16 @@ evaluation:
   n_queries: 1
   n_examples: 1
   use_rope: true
+  normalize_keys_to_median_norm: false
+  normalize_queries_to_median_norm: false
   compute_statistics: true
-  head_mode: selected_heads
-  layers: all
+  compute_group_cosine_distribution: true
+  group_cosine_distribution_bins: 50
+  center_candidate_keys_for_pi_plot: true
+  head_mode: "selected_heads"
+  layers: "all"
   custom_heads:
-  - layer: 17
-    q_head: 0
-    kv_head: 0
+    - {layer: 0, q_head: 22, kv_head: 5}
   exclude_sink_token: true
   local_window:
     size: 0
@@ -47,6 +50,8 @@ evaluation:
     - 256
     - 512
     - 1024
+    - 2048
+    - 4096
 algorithm_configs:
   multiq:
     n_query_clusters:
@@ -79,6 +84,8 @@ algorithm_configs:
     - 10
     - 12
   lsh_crosspoly: {}
+  lsh_cp_group: {}
+  lsh_crosspoly_multiprobe: {}
   lsh_crosspoly_clustered:
     k_dims:
     - 2
@@ -151,6 +158,10 @@ plotting:
   - 16
   - 10
   dpi: 200
+  # Ordering for group_token_probability_table:
+  # - key_logit (default): all keys globally by decreasing e^{l_i}/Z (blue curve continuous, on top)
+  # - group_then_key: groups by decreasing e^{l_g}, then keys in-group by e^{l_i}/Z
+  group_token_probability_order: "key_logit"
   log_scale: true
   linear_scale: true
   idealized_linestyle: --

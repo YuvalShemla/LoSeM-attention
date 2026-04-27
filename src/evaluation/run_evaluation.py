@@ -30,21 +30,48 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..algorithms import METHOD_REGISTRY
-from ..core import clear_kmeans_cache
+from ..core import clear_kmeans_cache, compute_special_indices
 from .data_loader import (
     load_examples, count_examples, discover_examples,
 )
 from .evaluator import (
     evaluate_query, aggregate_results,
     aggregate_query_stats,
+    aggregate_group_cosines,
+    aggregate_group_cosines_by_head_group,
+    _algorithm_family,
     weighted_aggregate_heads,
 )
 from .plotting import (
+    format_eval_config_caption,
+    _group_l1_cgm_over_z_quantiles_line,
     plot_evaluation, plot_overview,
-    plot_per_head_comparison, setup_style,
+    plot_per_head_comparison,
+    plot_group_cosine_distributions,
+    plot_group_cosine_table,
+    plot_group_cosine_cg_eg_scatter,
+    plot_group_cosine_cg_eg_scatter_table,
+    plot_group_token_probability_table,
+    setup_style,
+)
+from .pi_distribution_plot import (
+    PiDistributionAggregator,
+    plot_pi_distribution_per_head,
 )
 
 log = logging.getLogger("evaluation")
+
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_CYAN = "\033[36m"
+ANSI_MAGENTA = "\033[35m"
+ANSI_YELLOW = "\033[33m"
+ANSI_GREEN = "\033[32m"
+
+
+def _c(text: str, color: str, *, bold: bool = False) -> str:
+    pfx = (ANSI_BOLD if bold else "") + color
+    return f"{pfx}{text}{ANSI_RESET}"
 
 
 def build_algorithm_plot_families(algorithms, config: dict):
@@ -129,6 +156,7 @@ def replay_plots(results_dir: Path) -> None:
     budgets = config["evaluation"]["budget_sweep"][
         "absolute"
     ]
+    config_caption = format_eval_config_caption(config)
     tasks = spec.get("tasks", [])
     task_details = spec.get("task_details", {})
 
@@ -192,7 +220,62 @@ def replay_plots(results_dir: Path) -> None:
             families,
             title=plot_title,
             n_queries=n_queries,
+            config_caption=config_caption,
         )
+        gcs_path = task_dir / "group_cosine_stats.json"
+        if gcs_path.is_file():
+            with open(gcs_path) as f:
+                gcs = json.load(f)
+            plot_group_cosine_distributions(
+                gcs,
+                task_dir,
+                plotting,
+                title=plot_title,
+                config_caption=config_caption,
+            )
+            plot_group_cosine_cg_eg_scatter(
+                gcs,
+                task_dir,
+                plotting,
+                title=plot_title,
+                config_caption=config_caption,
+            )
+        gcs_hg_path = task_dir / "group_cosine_by_head_group_stats.json"
+        if gcs_hg_path.is_file():
+            with open(gcs_hg_path) as f:
+                gcs_hg = json.load(f)
+            plot_group_cosine_table(
+                gcs_hg,
+                task_dir,
+                plotting,
+                title=plot_title,
+                config_caption=config_caption,
+            )
+            plot_group_cosine_cg_eg_scatter_table(
+                gcs_hg,
+                task_dir,
+                plotting,
+                title=plot_title,
+                config_caption=config_caption,
+            )
+            plot_group_token_probability_table(
+                gcs_hg,
+                task_dir,
+                plotting,
+                title=plot_title,
+                config_caption=config_caption,
+            )
+        pi_stats_path = task_dir / "pi_distribution_per_head_stats.json"
+        if pi_stats_path.is_file():
+            with open(pi_stats_path) as f:
+                pi_stats = json.load(f)
+            plot_pi_distribution_per_head(
+                pi_stats,
+                task_dir,
+                plotting,
+                title=plot_title,
+                config_caption=config_caption,
+            )
 
         per_head_dir = task_dir / "per_head"
         if per_head_dir.is_dir():
@@ -222,6 +305,7 @@ def replay_plots(results_dir: Path) -> None:
                     plotting, budgets, families,
                     task_name=task,
                     seq_desc=seq_desc,
+                    config_caption=config_caption,
                 )
 
     if per_task_agg:
@@ -231,6 +315,7 @@ def replay_plots(results_dir: Path) -> None:
             per_task_agg, ov_dir, plotting,
             budgets, families,
             task_seq_info=task_seq_info,
+            config_caption=config_caption,
         )
         with open(ov_dir / "cross_task_stats.json", "w") as f:
             json.dump(per_task_agg, f, indent=2)
@@ -320,6 +405,12 @@ class Evaluation:
         self.n_queries = exp["n_queries"]
         self.n_examples = exp.get("n_examples", 10)
         self.use_rope = exp.get("use_rope", True)
+        self.normalize_keys_to_median_norm = bool(
+            exp.get("normalize_keys_to_median_norm", False)
+        )
+        self.normalize_queries_to_median_norm = bool(
+            exp.get("normalize_queries_to_median_norm", False)
+        )
         self.budgets = exp["budget_sweep"]["absolute"]
         self.head_dim = self.config["model"]["head_dim"]
         self.n_sink = (
@@ -330,6 +421,15 @@ class Evaluation:
 
         self.compute_statistics = exp.get(
             "compute_statistics", False
+        )
+        self.compute_group_cosine_distribution = exp.get(
+            "compute_group_cosine_distribution", False
+        )
+        self.group_cosine_bins = int(
+            exp.get("group_cosine_distribution_bins", 50)
+        )
+        self.center_candidate_keys_for_pi_plot = bool(
+            exp.get("center_candidate_keys_for_pi_plot", False)
         )
 
         self.head_mode = exp.get(
@@ -449,6 +549,9 @@ class Evaluation:
             families = build_algorithm_plot_families(
                 algorithms, self.config,
             )
+            config_caption = format_eval_config_caption(
+                self.config,
+            )
             ov_dir = self.out_dir / "overview"
             ov_dir.mkdir(exist_ok=True)
             task_seq_info = {}
@@ -468,6 +571,7 @@ class Evaluation:
                 self.config.get("plotting", {}),
                 self.budgets, families,
                 task_seq_info=task_seq_info,
+                config_caption=config_caption,
             )
             self._save_json(
                 "overview/cross_task_stats.json",
@@ -493,6 +597,23 @@ class Evaluation:
             len(all_rows),
         )
         log.info("Results: %s", self.out_dir)
+        math_task_dir = self.out_dir / "per_task" / "math_calc"
+        direct_plot_paths = [
+            math_task_dir / "group_cosine_distribution_table.png",
+            math_task_dir / "group_cosine_cg_eg_scatter_table.png",
+            math_task_dir / "group_token_probability_table.png",
+        ]
+        def _trim_to_results(path: Path) -> str:
+            parts = path.resolve().parts
+            if "results" in parts:
+                i = parts.index("results")
+                return str(Path(*parts[i:]))
+            return str(path.resolve())
+        for p in direct_plot_paths:
+            if p.is_file():
+                print(f"  {_trim_to_results(p)}")
+            else:
+                print(f"  (missing) {_trim_to_results(p)}")
 
     # ── Validation ──────────────────────────────────
 
@@ -544,15 +665,21 @@ class Evaluation:
             self._resolve_heads(task)
         )
         all_results = []
+        group_cosine_records = []
         per_head_results = {}
         rows = []
         cluster_quality_rows = []
         example_ids = set()
         seq_lens = []
+        # One id per evaluate_query call; used to dedupe hg table cells
+        # when budget-sweep methods share the same (head, n_groups).
+        eval_index = 0
+        per_head_pi_agg = {}
 
         for hi, (layer_idx, q_head, kv_head) in (
             enumerate(heads, 1)
         ):
+            per_head_pi_agg[hi - 1] = PiDistributionAggregator()
             log.info(
                 "  Head %d/%d: L%d H%d (kv=%d)",
                 hi, len(heads),
@@ -565,6 +692,12 @@ class Evaluation:
                 phase=phase,
                 max_examples=self.n_examples,
                 use_rope=self.use_rope,
+                normalize_keys_to_median_norm=(
+                    self.normalize_keys_to_median_norm
+                ),
+                normalize_queries_to_median_norm=(
+                    self.normalize_queries_to_median_norm
+                ),
             ))
             if not examples:
                 raise FileNotFoundError(
@@ -617,6 +750,52 @@ class Evaluation:
                         })
 
                 for qpos in qpos_list:
+                    this_eval = eval_index
+                    eval_index += 1
+                    q = Q[qpos].astype(np.float64, copy=False)
+                    n_causal = qpos + 1
+                    _, cand_idx = compute_special_indices(
+                        n_causal, self.n_sink, self.local_window,
+                    )
+                    if cand_idx is not None and len(cand_idx) > 0:
+                        k_causal = K[:qpos + 1].astype(
+                            np.float64, copy=False,
+                        )
+                        k_cand = k_causal[cand_idx]
+                        if self.center_candidate_keys_for_pi_plot:
+                            k_cand = k_cand - np.mean(
+                                k_cand, axis=0, keepdims=True,
+                            )
+                        logits = (k_cand @ q) / np.sqrt(self.head_dim)
+                        lg_max = float(np.max(logits))
+                        z_shift = float(
+                            np.sum(np.exp(logits - lg_max)),
+                        )
+                        if z_shift > 0.0:
+                            sqd = float(np.sqrt(self.head_dim))
+                            ref_levels = {
+                                "e^0/Z": float(np.exp(0.0 - lg_max) / z_shift),
+                                "e^1/Z": float(np.exp(1.0 - lg_max) / z_shift),
+                                "e^sqrt(d)/Z": float(
+                                    np.exp(sqd - lg_max) / z_shift
+                                ),
+                            }
+                        else:
+                            ref_levels = None
+                        p1_cand_idx = int(np.argmax(logits))
+                        p1_idx = int(cand_idx[p1_cand_idx])
+                        rel_pos_wrt_q = int(p1_idx - qpos)
+                        q_norm = float(np.linalg.norm(q))
+                        k_norm_values = np.linalg.norm(
+                            k_cand, axis=1,
+                        )
+                        per_head_pi_agg[hi - 1].add_logits(
+                            logits,
+                            rel_pos_wrt_q=rel_pos_wrt_q,
+                            ref_levels=ref_levels,
+                            q_norm=q_norm,
+                            k_norm_values=k_norm_values,
+                        )
                     qr = evaluate_query(
                         Q[qpos], K[:qpos + 1],
                         V[:qpos + 1], methods,
@@ -627,13 +806,194 @@ class Evaluation:
                         compute_statistics=(
                             self.compute_statistics
                         ),
+                        compute_group_cosine_distribution=(
+                            self.compute_group_cosine_distribution
+                        ),
                     )
                     all_results.append(qr)
+                    if self.compute_group_cosine_distribution:
+                        gc_payload = qr.get(
+                            "_group_cosines", {},
+                        )
+                        q_metrics = qr.get("_query_metrics", {})
+                        head_tag = (
+                            f"L{layer_idx}H{q_head}(kv={kv_head})"
+                        )
+                        for method_key, entry in gc_payload.items():
+                            p75z = None
+                            gl1 = None
+                            gl1_znorm = None
+                            sse_znorm = None
+                            p75_gl1 = None
+                            eg_l2 = None
+                            max_exp_lg = None
+                            v_rat_znorm = None
+                            group_sizes = None
+                            tok_prof_key = None
+                            tok_prof_group = None
+                            tok_prof_group_over_z = None
+                            tok_prof_bounds = None
+                            if isinstance(entry, dict):
+                                cos = entry.get("cosines")
+                                n_groups = int(entry.get("n_groups", 0))
+                            else:
+                                cos = entry
+                                n_groups = 0
+                            if cos is None or len(cos) == 0:
+                                continue
+                            sse = None
+                            s_bar = None
+                            v_rat = None
+                            if isinstance(entry, dict):
+                                sse = entry.get(
+                                    "exp_residual_l1_over_z",
+                                )
+                                if sse is None:
+                                    sse = entry.get(
+                                        "exp_residual_sse_over_z2",
+                                    )
+                                if sse is None:
+                                    sse = entry.get(
+                                        "exp_residual_sse_sum",
+                                    )
+                                if sse is None:
+                                    sse = entry.get(
+                                        "logit_residual_sse_sum",
+                                    )
+                                if sse is None:
+                                    sse = entry.get(
+                                        "logit_within_group_var_sum",
+                                    )
+                                sse_znorm = entry.get(
+                                    "exp_residual_l1_znorm",
+                                )
+                                s_bar = entry.get("sum_exp_bar_logits")
+                                v_rat = entry.get(
+                                    "value_softmax_mismatch_ratio",
+                                )
+                                if v_rat is None:
+                                    v_rat = entry.get(
+                                        "value_logit_group_l2_sq",
+                                    )
+                                v_rat_znorm = entry.get(
+                                    "value_mismatch_ratio_znorm",
+                                )
+                                p75z = entry.get(
+                                    "max_group_exp_logits_m_over_z",
+                                )
+                                if p75z is None:
+                                    p75z = entry.get(
+                                        "p75_group_z_norm_residuals",
+                                    )
+                                if p75z is None:
+                                    p75z = entry.get(
+                                        "median_group_z_norm_residuals",
+                                    )
+                                gl1 = entry.get("group_l1_cg_m_over_z")
+                                gl1_znorm = entry.get("group_l1_cg_m_znorm")
+                                group_sizes = entry.get("group_sizes")
+                                p75_gl1 = entry.get(
+                                    "p75_group_l1_cg_m_over_z",
+                                )
+                                if p75_gl1 is None:
+                                    p75_gl1 = entry.get(
+                                        "median_group_l1_cg_m_over_z",
+                                    )
+                                eg_l2 = entry.get(
+                                    "group_out_l2_err_sq_m_over_z",
+                                )
+                                exp_lg = entry.get(
+                                    "group_exp_lg_m_over_z",
+                                )
+                                max_exp_lg = entry.get(
+                                    "max_group_exp_lg_m_over_z",
+                                )
+                                tok_prof_key = entry.get(
+                                    "token_profile_key_probs",
+                                )
+                                tok_prof_group = entry.get(
+                                    "token_profile_group_probs",
+                                )
+                                tok_prof_group_over_z = entry.get(
+                                    "token_profile_group_probs_over_z",
+                                )
+                                tok_prof_bounds = entry.get(
+                                    "token_profile_group_boundaries",
+                                )
+                                top_logits = entry.get(
+                                    "max_group_top_logits",
+                                )
+                                if top_logits is None:
+                                    top_logits = []
+                            else:
+                                p75z = None
+                                gl1 = None
+                                gl1_znorm = None
+                                sse_znorm = None
+                                p75_gl1 = None
+                                eg_l2 = None
+                                exp_lg = None
+                                max_exp_lg = None
+                                v_rat_znorm = None
+                                group_sizes = None
+                                top_logits = []
+                                tok_prof_key = None
+                                tok_prof_group = None
+                                tok_prof_group_over_z = None
+                                tok_prof_bounds = None
+                            print(
+                                _c("[max_e_lg_top100_logits]", ANSI_MAGENTA, bold=True),
+                                _c(f"task={task}", ANSI_CYAN),
+                                _c(f"eval_index={this_eval}", ANSI_YELLOW),
+                                _c(f"head={head_tag}", ANSI_GREEN),
+                                _c(f"method={method_key}", ANSI_CYAN, bold=True),
+                                top_logits,
+                            )
+                            head_ent = None
+                            if head_meta and (hi - 1) < len(
+                                head_meta,
+                            ):
+                                head_ent = head_meta[hi - 1].get(
+                                    "effective_entropy",
+                                )
+                            group_cosine_records.append({
+                                "algorithm": _algorithm_family(method_key),
+                                "method": method_key,
+                                "eval_index": this_eval,
+                                "head": head_tag,
+                                "effective_entropy": head_ent,
+                                "n_groups": n_groups,
+                                "cosines": cos,
+                                "exp_residual_l1_over_z": sse,
+                                "exp_residual_sse_over_z2": sse,
+                                "exp_residual_sse_sum": sse,
+                                "logit_residual_sse_sum": sse,
+                                "sum_exp_logits": q_metrics.get(
+                                    "sum_exp_logits",
+                                ),
+                                "sum_exp_bar_logits": s_bar,
+                                "exp_residual_l1_znorm": sse_znorm,
+                                "value_softmax_mismatch_ratio": v_rat,
+                                "value_logit_group_l2_sq": v_rat,
+                                "value_mismatch_ratio_znorm": v_rat_znorm,
+                                "p75_group_z_norm_residuals": p75z,
+                                "max_group_exp_lg_m_over_z": max_exp_lg,
+                                "group_l1_cg_m_over_z": gl1,
+                                "group_l1_cg_m_znorm": gl1_znorm,
+                                "group_sizes": group_sizes,
+                                "p75_group_l1_cg_m_over_z": p75_gl1,
+                                "group_out_l2_err_sq_m_over_z": eg_l2,
+                                "group_exp_lg_m_over_z": exp_lg,
+                                "token_profile_key_probs": tok_prof_key,
+                                "token_profile_group_probs": tok_prof_group,
+                                "token_profile_group_probs_over_z": tok_prof_group_over_z,
+                                "token_profile_group_boundaries": tok_prof_bounds,
+                            })
                     per_head_results.setdefault(
                         hi - 1, []
                     ).append(qr)
                     for key, val in qr.items():
-                        if key == "_query_stats":
+                        if key.startswith("_"):
                             continue
                         mname = key.rsplit("-", 1)[0]
                         mk = "idealized"
@@ -670,6 +1030,9 @@ class Evaluation:
 
         families = build_algorithm_plot_families(
             algorithms, self.config,
+        )
+        config_caption = format_eval_config_caption(
+            self.config,
         )
 
         # Per-head aggregation and plots
@@ -737,6 +1100,7 @@ class Evaluation:
                 seq_desc=(
                     f"{seq_desc}  |  {settings_desc}"
                 ),
+                config_caption=config_caption,
             )
 
         # Weighted aggregate across heads
@@ -773,7 +1137,101 @@ class Evaluation:
                 f"({settings_desc})"
             ),
             n_queries=n_total,
+            config_caption=config_caption,
         )
+        if self.compute_group_cosine_distribution:
+            group_cosine_stats = aggregate_group_cosines(
+                all_results,
+                n_bins=self.group_cosine_bins,
+            )
+            if group_cosine_stats:
+                self._save_json(
+                    f"per_task/{task}/group_cosine_stats.json",
+                    group_cosine_stats,
+                )
+                for _mk, _row in sorted(
+                    group_cosine_stats.items(),
+                ):
+                    _qline = _group_l1_cgm_over_z_quantiles_line(
+                        (_row.get("group_l1_hist_meta") or {}),
+                    )
+                    if _qline:
+                        log.info(
+                            "  [%s] %s",
+                            _mk,
+                            _qline,
+                        )
+                plot_group_cosine_distributions(
+                    group_cosine_stats,
+                    task_dir,
+                    self.config.get("plotting", {}),
+                    title=f"{task} — {seq_desc}",
+                    config_caption=config_caption,
+                )
+                plot_group_cosine_cg_eg_scatter(
+                    group_cosine_stats,
+                    task_dir,
+                    self.config.get("plotting", {}),
+                    title=f"{task} — {seq_desc}",
+                    config_caption=config_caption,
+                )
+            hg_stats = aggregate_group_cosines_by_head_group(
+                group_cosine_records,
+                n_bins=self.group_cosine_bins,
+            )
+            if hg_stats.get("columns") and hg_stats.get("row_algorithms"):
+                self._save_json(
+                    f"per_task/{task}/group_cosine_by_head_group_stats.json",
+                    hg_stats,
+                )
+                plot_group_cosine_table(
+                    hg_stats,
+                    task_dir,
+                    self.config.get("plotting", {}),
+                    title=f"{task} — {seq_desc}",
+                    config_caption=config_caption,
+                )
+                plot_group_cosine_cg_eg_scatter_table(
+                    hg_stats,
+                    task_dir,
+                    self.config.get("plotting", {}),
+                    title=f"{task} — {seq_desc}",
+                    config_caption=config_caption,
+                )
+                plot_group_token_probability_table(
+                    hg_stats,
+                    task_dir,
+                    self.config.get("plotting", {}),
+                    title=f"{task} — {seq_desc}",
+                    config_caption=config_caption,
+                )
+        per_head_pi_stats = {}
+        for idx, agg_obj in per_head_pi_agg.items():
+            l, h, k = heads[idx]
+            hm = head_meta[idx] if head_meta else {}
+            stats = agg_obj.finalize()
+            if int(stats.get("n_queries", 0)) <= 0:
+                continue
+            per_head_pi_stats[str(idx)] = {
+                "layer": int(l),
+                "q_head": int(h),
+                "kv_head": int(k),
+                "selection_label": hm.get("selection_label", ""),
+                "effective_entropy": hm.get("effective_entropy"),
+                "stats": stats,
+            }
+        if per_head_pi_stats:
+            self._save_json(
+                f"per_task/{task}/pi_distribution_per_head_stats.json",
+                per_head_pi_stats,
+            )
+            plot_pi_distribution_per_head(
+                per_head_pi_stats,
+                task_dir,
+                self.config.get("plotting", {}),
+                title=f"{task} — {seq_desc}",
+                config_caption=config_caption,
+            )
 
         self._save_json(
             f"per_task/{task}/aggregated_stats.json",
@@ -817,6 +1275,11 @@ class Evaluation:
                     0,
                 ),
             )
+        if self.compute_group_cosine_distribution:
+            data_stats["group_cosine_distribution"] = {
+                "enabled": True,
+                "bins": self.group_cosine_bins,
+            }
         self._save_json(
             f"per_task/{task}/data_statistics.json",
             data_stats,

@@ -44,6 +44,10 @@ class AttentionOutput:
     output: np.ndarray             # [head_dim]
     actual_budget: int
     selected_indices: Optional[np.ndarray] = None
+    # Optional debug payload for analysis:
+    # list of arrays of member key indices, one per
+    # grouped representative/bucket used by the method.
+    grouped_member_indices: Optional[List[np.ndarray]] = None
 
 
 class AttentionAlgorithm(ABC):

@@ -15,9 +15,326 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import ScalarFormatter
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+def _order_group_cosine_table_columns(
+    columns: List[Dict],
+) -> List[Dict]:
+    """
+    Same column order as aggregate_group_cosines_by_head_group: low
+    effective_entropy to high, then layer/head, then n_groups.
+    Used so replayed JSON and plots stay consistent with per-head
+    comparison ordering.
+    """
+
+    def _col_key(col: Dict) -> tuple:
+        ent = col.get("effective_entropy")
+        if ent is None:
+            e = float("inf")
+        else:
+            try:
+                e = float(ent)
+                if not np.isfinite(e):
+                    e = float("inf")
+            except (TypeError, ValueError):
+                e = float("inf")
+        h = col.get("head", "")
+        try:
+            p = h.split("(")[0]
+            layer = int(p.split("H")[0][1:])
+            qh = int(p.split("H")[1])
+            ht = (layer, qh, h)
+        except Exception:
+            ht = (10**9, 10**9, h)
+        return (e, ht, int(col.get("n_groups", 0)))
+
+    return sorted(columns, key=_col_key)
+
+
+def _format_exp_l1_over_z(x: float) -> str:
+    """
+    Format L1(exp residual)/Z for annotations: enough digits that small
+    positives are visible; scientific notation when |x| is very small.
+    """
+    xf = float(x)
+    if not np.isfinite(xf):
+        return str(xf)
+    ax = abs(xf)
+    if ax == 0.0:
+        return "0"
+    if ax < 0.01:
+        return f"{xf:.4e}"
+    return f"{xf:.8f}"
+
+
+def _group_l1_cgm_over_z_quantiles_line(meta: Optional[Dict]) -> str:
+    """
+    One-line summary of pooled m·c_g quantiles (all groups, all queries).
+    """
+    if not meta:
+        return ""
+    keys = ("p50", "p75", "p90")
+    if not any(k in meta for k in keys):
+        return ""
+    parts = []
+    for k in keys:
+        if k in meta:
+            parts.append(
+                f"{k.upper()}={_format_exp_l1_over_z(float(meta[k]))}",
+            )
+    return "m·c_g: " + " ".join(parts)
+
+
+def _group_l1_znorm_quantiles_line(meta: Optional[Dict]) -> str:
+    """
+    One-line summary of pooled m·c_g (Z-norm) quantiles.
+    c_g here uses Z instead of Z' for the group probability.
+    """
+    if not meta:
+        return ""
+    keys = ("p50", "p75", "p90")
+    if not any(k in meta for k in keys):
+        return ""
+    parts = []
+    for k in keys:
+        if k in meta:
+            parts.append(
+                f"{k.upper()}={_format_exp_l1_over_z(float(meta[k]))}",
+            )
+    return "m·c_g(Z): " + " ".join(parts)
+
+
+def _overlay_p75_z_norm_histogram(ax, entry: Dict) -> None:
+    """
+    Overlay density histogram of e^{l_i} * m / Z for tokens i in the
+    group with maximal e^{l_g} * m / Z, where l_g is the group mean logit.
+    Drawn on a twin top x-axis (cosines use bottom).
+    """
+    mh_tok = entry.get("max_group_exp_logits_histogram")
+    if not mh_tok:
+        mh_tok = entry.get("p75_z_norm_histogram")
+    if not mh_tok:
+        mh_tok = entry.get("median_z_norm_histogram")
+    if not mh_tok:
+        return
+    edges = np.array(mh_tok.get("bin_edges", []), dtype=np.float64)
+    counts = np.array(mh_tok.get("counts", []), dtype=np.float64)
+    if len(edges) < 2 or len(counts) != len(edges) - 1:
+        return
+    widths = np.diff(edges)
+    centers = edges[:-1] + widths / 2
+    total = max(float(np.sum(counts)), 1.0)
+    density = counts / total
+    ax2 = ax.twiny()
+    ax2.bar(
+        centers,
+        density,
+        width=widths,
+        align="center",
+        alpha=0.42,
+        edgecolor="none",
+        color="tab:orange",
+        zorder=2,
+    )
+    mh_lg = entry.get("max_group_exp_lg_histogram")
+    if mh_lg:
+        lg_edges = np.array(
+            mh_lg.get("bin_edges", []), dtype=np.float64
+        )
+        lg_counts = np.array(
+            mh_lg.get("counts", []), dtype=np.float64
+        )
+        if (
+            len(lg_edges) == len(edges)
+            and len(lg_counts) == len(counts)
+        ):
+            lg_total = max(float(np.sum(lg_counts)), 1.0)
+            lg_density = lg_counts / lg_total
+            ax2.bar(
+                centers,
+                lg_density,
+                width=0.55 * widths,
+                align="center",
+                alpha=0.78,
+                facecolor="none",
+                edgecolor="#c76a00",
+                linewidth=0.9,
+                zorder=2.6,
+            )
+    ax2.set_xlim(edges[0], edges[-1])
+    ax2.set_xlabel(
+        r"max-$e^{\ell_g}$ group: $e^{\ell_i}\,m/Z$",
+        fontsize=7,
+        labelpad=2,
+        color="tab:orange",
+    )
+    sf = ScalarFormatter(useMathText=True)
+    sf.set_powerlimits((-2, 2))
+    ax2.xaxis.set_major_formatter(sf)
+    ax2.ticklabel_format(
+        axis="x",
+        style="sci",
+        scilimits=(-2, 2),
+    )
+    ax2.tick_params(
+        axis="x",
+        labelsize=6,
+        pad=1,
+        colors="tab:orange",
+    )
+    # Keep scientific multiplier (offset text) visually consistent.
+    off = ax2.xaxis.get_offset_text()
+    off.set_color("tab:orange")
+    off.set_fontsize(6)
+
+
+def _overlay_group_l1_contrib_histogram(ax, entry: Dict) -> None:
+    """
+    Cumulative curves over thresholds x for c_g*m:
+      - error-share curve: share of total L1 contribution from groups
+        with c_g*m <= x
+      - group-share curve: share of groups with c_g*m <= x
+    Twin x-axis on a lower horizontal spine.
+    """
+    gh = entry.get("group_l1_contrib_histogram")
+    if not gh:
+        return
+    edges = np.array(gh.get("bin_edges", []), dtype=np.float64)
+    g_counts = np.array(gh.get("counts", []), dtype=np.float64)
+    cum = entry.get("group_l1_contrib_cumulative") or {}
+    g_cum = np.array(cum.get("cum_share", []), dtype=np.float64)
+    if (
+        len(edges) < 2
+        or len(g_cum) != len(edges) - 1
+        or len(g_counts) != len(edges) - 1
+    ):
+        return
+    g_count_total = float(np.sum(g_counts))
+    if g_count_total > 0.0:
+        g_count_cum = np.cumsum(g_counts) / g_count_total
+    else:
+        g_count_cum = np.zeros_like(g_counts)
+    meta = entry.get("group_l1_hist_meta") or {}
+    use_log = bool(meta.get("log_scale_x"))
+    x_right = edges[1:]
+    ax3 = ax.twiny()
+    ax3.patch.set_visible(False)
+    ax3.spines["top"].set_visible(False)
+    ax3.spines["left"].set_visible(False)
+    ax3.spines["right"].set_visible(False)
+    ax3.xaxis.set_ticks_position("bottom")
+    ax3.xaxis.set_label_position("bottom")
+    ax3.spines["bottom"].set_position(("axes", 0.14))
+    if use_log:
+        ax3.set_xscale("log")
+    ax3.plot(
+        x_right,
+        g_cum,
+        color="tab:green",
+        lw=1.5,
+        alpha=0.9,
+        zorder=4,
+    )
+    ax3.fill_between(
+        x_right,
+        0.0,
+        g_cum,
+        step="pre",
+        alpha=0.18,
+        edgecolor="none",
+        color="tab:green",
+        zorder=3,
+    )
+    ax3.plot(
+        x_right,
+        g_count_cum,
+        color="tab:green",
+        lw=1.35,
+        alpha=0.95,
+        linestyle="--",
+        zorder=5,
+    )
+    ax3.set_ylim(0.0, 1.02)
+    ax3.set_xlim(edges[0], edges[-1])
+    ax3.tick_params(axis="x", labelsize=5, pad=1)
+    _xl = (
+        r"$c_g\,m$ threshold $x$: cumulative $L_1$ contribution "
+        r"(solid) and cumulative group share (dashed)"
+    )
+    if use_log:
+        _xl += r"; $\log_{10}$-spaced bins; log $x$; $x \geq 10^{-6}$"
+    elif meta.get("display_cap_quantile") is not None:
+        dq = float(meta.get("display_cap_quantile", 90.0))
+        cap_v = float(meta.get("display_cap_value", 0.0))
+        cap_s = _format_exp_l1_over_z(cap_v)
+        _xl += (
+            rf"; $x$: $[\min,\,P_{{{dq:.0f}}}]$ + overflow "
+            rf"($P_{{{dq:.0f}}}\!\approx\!{cap_s}$)"
+        )
+    ax3.set_xlabel(_xl, fontsize=6, labelpad=4)
+    if meta and not use_log:
+        ova = int(meta.get("overflow_n_all_g", 0))
+        if ova > 0:
+            ax.text(
+                0.99,
+                0.03,
+                f"Overflow bin (all-g): {ova}",
+                transform=ax.transAxes,
+                fontsize=5,
+                ha="right",
+                va="bottom",
+                color="#2e2e2e",
+                zorder=22,
+            )
+
+
+def format_eval_config_caption(config: Optional[Dict] = None) -> str:
+    """
+    Short caption of important evaluation knobs for figure titles.
+
+    Emphasizes local window size (and sink handling), query count,
+    head mode, and seed so plots are self-describing when compared.
+    """
+    if not config:
+        return ""
+    ev = config.get("evaluation")
+    if not isinstance(ev, dict):
+        return ""
+    lw = ev.get("local_window") or {}
+    if isinstance(lw, dict):
+        local_size = lw.get("size", "?")
+    else:
+        local_size = "?"
+    sink = (
+        1 if ev.get("exclude_sink_token", True) else 0
+    )
+    nq = ev.get("n_queries", "?")
+    ne = ev.get("n_examples", "?")
+    hm = ev.get("head_mode", "") or ""
+    if hm == "selected_heads":
+        hm_s = "selected"
+    elif hm == "all_heads":
+        hm_s = "all"
+    elif hm == "custom":
+        hm_s = "custom"
+    else:
+        hm_s = hm[:16] if hm else "?"
+    seed = ev.get("seed", "?")
+    nk = bool(ev.get("normalize_keys_to_median_norm", False))
+    nq_norm = bool(ev.get("normalize_queries_to_median_norm", False))
+    nk_s = "on" if nk else "off"
+    nq_s = "on" if nq_norm else "off"
+    return (
+        f"local={local_size} · sink={sink} · n_q={nq} · "
+        f"ex={ne} · heads={hm_s} · seed={seed} · "
+        f"normK={nk_s} · normQ={nq_s}"
+    )
 
 
 def setup_style():
@@ -428,6 +745,7 @@ def plot_evaluation(
     title: str = "",
     filename: str = "results",
     n_queries: int = 0,
+    config_caption: str = "",
 ):
     """
     Generate log + linear scale plots.
@@ -490,10 +808,14 @@ def plot_evaluation(
             f"{n_queries} queries" if n_queries
             else ""
         )
+        parts = []
         if title:
-            full_title = f"{title}\n{subtitle}"
-        else:
-            full_title = subtitle
+            parts.append(title)
+        if config_caption:
+            parts.append(config_caption)
+        if subtitle:
+            parts.append(subtitle)
+        full_title = "\n".join(parts)
         if full_title.strip():
             ax.set_title(
                 full_title, fontsize=13,
@@ -516,6 +838,7 @@ def plot_overview(
     budgets: List[int],
     algorithm_families: List[Dict],
     task_seq_info: Dict[str, str] = None,
+    config_caption: str = "",
 ):
     """
     Cross-task summary plots.
@@ -581,9 +904,11 @@ def plot_overview(
             r, c = divmod(i, cols)
             axes[r][c].set_visible(False)
 
+        st = f"Cross-Task Summary ({scale})"
+        if config_caption:
+            st = f"{st}\n{config_caption}"
         fig.suptitle(
-            f"Cross-Task Summary ({scale})",
-            fontsize=14, fontweight="bold",
+            st, fontsize=14, fontweight="bold",
         )
         plt.tight_layout()
         save_figure(
@@ -660,6 +985,7 @@ def plot_per_head_comparison(
     algorithm_families: List[Dict],
     task_name: str = "",
     seq_desc: str = "",
+    config_caption: str = "",
 ):
     """
     Per-head subplot comparison.
@@ -689,7 +1015,28 @@ def plot_per_head_comparison(
     if plot_cfg.get("linear_scale", True):
         scales.append(False)
 
-    sorted_idxs = sorted(per_head_aggs.keys())
+    def _per_head_sort_key(i: int) -> tuple:
+        info = per_head_aggs[i]
+        ent = info.get("effective_entropy")
+        if ent is None:
+            e = float("inf")
+        else:
+            try:
+                e = float(ent)
+                if not np.isfinite(e):
+                    e = float("inf")
+            except (TypeError, ValueError):
+                e = float("inf")
+        return (
+            e,
+            info.get("layer", 10**9),
+            info.get("q_head", 10**9),
+        )
+
+    sorted_idxs = sorted(
+        per_head_aggs.keys(),
+        key=_per_head_sort_key,
+    )
 
     for log_scale in scales:
         scale = "log" if log_scale else "linear"
@@ -763,6 +1110,8 @@ def plot_per_head_comparison(
         if seq_desc:
             suptitle += f" — {seq_desc}"
         suptitle += f" ({scale})"
+        if config_caption:
+            suptitle = f"{suptitle}\n{config_caption}"
         fig.suptitle(
             suptitle, fontsize=14,
             fontweight="bold",
@@ -774,3 +1123,1029 @@ def plot_per_head_comparison(
             / f"per_head_comparison_{scale}.png",
             dpi=dpi,
         )
+
+
+def plot_group_cosine_distributions(
+    group_cosine_stats: Dict[str, Dict],
+    out_dir: Path,
+    plot_cfg: Dict,
+    title: str = "",
+    config_caption: str = "",
+    filename: str = "group_cosine_distribution",
+):
+    """
+    Plot cosine(key, group_mean_key) histograms per method.
+    """
+    if not group_cosine_stats:
+        return
+    setup_style()
+    methods = sorted(group_cosine_stats.keys())
+    n = len(methods)
+    cols = min(3, n)
+    rows_n = (n + cols - 1) // cols
+    figsize = tuple(plot_cfg.get("figsize", [16, 10]))
+    dpi = plot_cfg.get("dpi", 200)
+
+    fig, axes = plt.subplots(
+        rows_n, cols,
+        figsize=(figsize[0], figsize[1] * rows_n / 2),
+        squeeze=False,
+    )
+    for i, method in enumerate(methods):
+        r, c = divmod(i, cols)
+        ax = axes[r][c]
+        entry = group_cosine_stats[method]
+        hist = entry.get("histogram", {})
+        edges = np.array(hist.get("bin_edges", []), dtype=np.float64)
+        counts = np.array(hist.get("counts", []), dtype=np.float64)
+        if len(edges) >= 2 and len(counts) == len(edges) - 1:
+            widths = np.diff(edges)
+            centers = edges[:-1] + widths / 2
+            total = max(float(np.sum(counts)), 1.0)
+            density = counts / total
+            ax.bar(
+                centers,
+                density,
+                width=widths,
+                align="center",
+                alpha=0.75,
+                edgecolor="none",
+                color="C0",
+                zorder=1,
+            )
+        ax.set_xlim(-1.0, 1.0)
+        ax.set_xlabel("cos(key, group_mean_key)")
+        ax.set_ylabel("fraction")
+        mu = entry.get("cos_mean", 0.0)
+        sd = entry.get("cos_std", 0.0)
+        nv = entry.get("n_values", 0)
+        sse_m = entry.get("exp_residual_l1_over_z_mean")
+        sse_s = entry.get("exp_residual_l1_over_z_std")
+        if sse_m is None:
+            sse_m = entry.get("exp_residual_sse_over_z2_mean")
+        if sse_s is None:
+            sse_s = entry.get("exp_residual_sse_over_z2_std")
+        if sse_m is None:
+            sse_m = entry.get("exp_residual_sse_sum_mean")
+        if sse_s is None:
+            sse_s = entry.get("exp_residual_sse_sum_std")
+        if sse_m is None:
+            sse_m = entry.get("logit_residual_sse_sum_mean")
+        if sse_s is None:
+            sse_s = entry.get("logit_residual_sse_sum_std")
+        if sse_m is None:
+            sse_m = entry.get("logit_within_group_var_sum_mean")
+        if sse_s is None:
+            sse_s = entry.get("logit_within_group_var_sum_std")
+        tlines = [
+            str(method),
+            f"mu={mu:.3f}, sd={sd:.3f}, n={nv}",
+        ]
+        ze_m = entry.get("sum_exp_logits_mean")
+        ze_s = entry.get("sum_exp_logits_std")
+        if ze_m is not None:
+            tlines.append(
+                f"Z={ze_m:.3g}" + (f"\u00b1{ze_s:.3g}" if ze_s else ""),
+            )
+        zb_m = entry.get("sum_exp_bar_logits_mean")
+        zb_s = entry.get("sum_exp_bar_logits_std")
+        if zb_m is not None:
+            tlines.append(
+                f"Z'={zb_m:.3g}" + (f"\u00b1{zb_s:.3g}" if zb_s else ""),
+            )
+        if sse_m is not None:
+            tlines.append(
+                f"L1 {_format_exp_l1_over_z(sse_m)}"
+                + (f"\u00b1{_format_exp_l1_over_z(sse_s)}" if sse_s is not None else ""),
+            )
+        l1z_m = entry.get("exp_residual_l1_znorm_mean")
+        l1z_s = entry.get("exp_residual_l1_znorm_std")
+        if l1z_m is not None:
+            tlines.append(
+                f"L1(Z) {_format_exp_l1_over_z(l1z_m)}"
+                + (f"\u00b1{_format_exp_l1_over_z(l1z_s)}" if l1z_s is not None else ""),
+            )
+        vl_m = entry.get("value_softmax_mismatch_ratio_mean")
+        vl_s = entry.get("value_softmax_mismatch_ratio_std")
+        if vl_m is None:
+            vl_m = entry.get("value_logit_group_l2_sq_mean")
+        if vl_s is None:
+            vl_s = entry.get("value_logit_group_l2_sq_std")
+        if vl_m is not None:
+            tlines.append(
+                f"||\u0394o||/||o*|| {vl_m:.4g}"
+                + (f"\u00b1{vl_s:.4g}" if vl_s is not None else ""),
+            )
+        vlz_m = entry.get("value_mismatch_ratio_znorm_mean")
+        vlz_s = entry.get("value_mismatch_ratio_znorm_std")
+        if vlz_m is not None:
+            tlines.append(
+                f"||\u0394o(Z)||/||o*|| {vlz_m:.4g}"
+                + (f"\u00b1{vlz_s:.4g}" if vlz_s is not None else ""),
+            )
+        g1m = entry.get("group_l1_hist_meta") or {}
+        _qcg = _group_l1_cgm_over_z_quantiles_line(g1m)
+        if _qcg:
+            tlines.append(_qcg)
+        g1z = entry.get("group_l1_znorm_meta") or {}
+        _qcgz = _group_l1_znorm_quantiles_line(g1z)
+        if _qcgz:
+            tlines.append(_qcgz)
+        _overlay_p75_z_norm_histogram(ax, entry)
+        _overlay_group_l1_contrib_histogram(ax, entry)
+        ax.set_title("\n".join(tlines), fontsize=9)
+        leg_handles = [
+            Patch(
+                facecolor="C0",
+                alpha=0.75,
+                edgecolor="none",
+                label="cos(key, group mean)",
+            ),
+        ]
+        if entry.get("max_group_exp_logits_histogram") or entry.get(
+            "p75_z_norm_histogram",
+        ) or entry.get(
+            "median_z_norm_histogram",
+        ):
+            leg_handles.append(
+                Patch(
+                    facecolor="tab:orange",
+                    alpha=0.42,
+                    edgecolor="none",
+                    label=(
+                        r"max-$e^{\ell_g}$ group: "
+                        r"$e^{\ell_i}\,m/Z$"
+                    ),
+                ),
+            )
+        if entry.get("max_group_exp_lg_histogram"):
+            leg_handles.append(
+                Patch(
+                    facecolor="none",
+                    edgecolor="#c76a00",
+                    linewidth=0.9,
+                    label=(
+                        r"max-$e^{\ell_g}$ group: "
+                        r"$e^{\ell_g}\,m/Z$"
+                    ),
+                ),
+            )
+        if entry.get("group_l1_contrib_cumulative"):
+            leg_handles.append(
+                Line2D(
+                    [0], [0],
+                    label=(
+                        r"cum. $L_1$ share vs threshold on $c_g\,m$"
+                    ),
+                    color="tab:green",
+                    lw=1.6,
+                ),
+            )
+            leg_handles.append(
+                Line2D(
+                    [0], [0],
+                    label=(
+                        r"cum. group share vs threshold on $c_g\,m$"
+                    ),
+                    color="tab:green",
+                    lw=1.35,
+                    linestyle="--",
+                ),
+            )
+        if len(leg_handles) > 1:
+            ax.legend(
+                handles=leg_handles,
+                loc="upper left",
+                fontsize=6,
+                framealpha=0.92,
+            )
+
+    for i in range(n, rows_n * cols):
+        r, c = divmod(i, cols)
+        axes[r][c].set_visible(False)
+
+    suptitle = (
+        "Key-to-Group-Mean Cosine Distributions "
+        "(orange: max-$e^{\\ell_g}$ group $e^{\\ell_i}m/Z$; "
+        "orange-outline: $e^{\\ell_g}m/Z$; "
+        "green: cumulative $L_1$ share vs threshold on $c_g\\,m$)"
+    )
+    if title:
+        suptitle = f"{title} — {suptitle}"
+    if config_caption:
+        suptitle = f"{suptitle}\n{config_caption}"
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    save_figure(fig, out_dir / f"{filename}.png", dpi=dpi)
+
+
+def plot_group_cosine_table(
+    table_stats: Dict[str, Dict],
+    out_dir: Path,
+    plot_cfg: Dict,
+    title: str = "",
+    config_caption: str = "",
+    filename: str = "group_cosine_distribution_table",
+):
+    """
+    Table layout: rows are algorithms, columns are (head, #groups).
+    """
+    rows = table_stats.get("row_algorithms", [])
+    columns = _order_group_cosine_table_columns(
+        list(table_stats.get("columns", [])),
+    )
+    cells = table_stats.get("cells", {})
+    if not rows or not columns:
+        return
+
+    setup_style()
+    n_rows = len(rows)
+    n_cols = len(columns)
+    dpi = plot_cfg.get("dpi", 200)
+
+    # Slightly wider cells for readable column headers.
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(max(4 * n_cols, 10), max(2.6 * n_rows, 6)),
+        squeeze=False,
+    )
+
+    for r, algo in enumerate(rows):
+        for c, col in enumerate(columns):
+            ax = axes[r][c]
+            col_key = col["key"]
+            entry = cells.get(algo, {}).get(col_key)
+            if entry:
+                hist = entry.get("histogram", {})
+                edges = np.array(
+                    hist.get("bin_edges", []), dtype=np.float64
+                )
+                counts = np.array(
+                    hist.get("counts", []), dtype=np.float64
+                )
+                if len(edges) >= 2 and len(counts) == len(edges) - 1:
+                    widths = np.diff(edges)
+                    centers = edges[:-1] + widths / 2
+                    total = max(float(np.sum(counts)), 1.0)
+                    density = counts / total
+                    ax.bar(
+                        centers,
+                        density,
+                        width=widths,
+                        align="center",
+                        alpha=0.75,
+                        edgecolor="none",
+                        color="C0",
+                        zorder=1,
+                    )
+                _overlay_p75_z_norm_histogram(ax, entry)
+                _overlay_group_l1_contrib_histogram(ax, entry)
+                mu = entry.get("cos_mean", 0.0)
+                sd = entry.get("cos_std", 0.0)
+                nv = entry.get("n_values", 0)
+                sse_m = entry.get("exp_residual_l1_over_z_mean")
+                sse_s = entry.get("exp_residual_l1_over_z_std")
+                if sse_m is None:
+                    sse_m = entry.get("exp_residual_sse_over_z2_mean")
+                if sse_s is None:
+                    sse_s = entry.get("exp_residual_sse_over_z2_std")
+                if sse_m is None:
+                    sse_m = entry.get("exp_residual_sse_sum_mean")
+                if sse_s is None:
+                    sse_s = entry.get("exp_residual_sse_sum_std")
+                if sse_m is None:
+                    sse_m = entry.get(
+                        "logit_residual_sse_sum_mean",
+                    )
+                if sse_s is None:
+                    sse_s = entry.get(
+                        "logit_residual_sse_sum_std",
+                    )
+                if sse_m is None:
+                    sse_m = entry.get(
+                        "logit_within_group_var_sum_mean",
+                    )
+                if sse_s is None:
+                    sse_s = entry.get(
+                        "logit_within_group_var_sum_std",
+                    )
+                txt_lines = [
+                    f"mu={mu:.3f}  sd={sd:.3f}  n={nv}",
+                ]
+                ze_m = entry.get("sum_exp_logits_mean")
+                ze_s = entry.get("sum_exp_logits_std")
+                if ze_m is not None:
+                    txt_lines.append(
+                        f"Z {ze_m:.3g}" + (f"±{ze_s:.3g}" if ze_s else ""),
+                    )
+                zb_m = entry.get("sum_exp_bar_logits_mean")
+                zb_s = entry.get("sum_exp_bar_logits_std")
+                if zb_m is not None:
+                    txt_lines.append(
+                        f"Z' {zb_m:.3g}" + (f"±{zb_s:.3g}" if zb_s else ""),
+                    )
+                if sse_m is not None:
+                    txt_lines.append(
+                        f"L1 {_format_exp_l1_over_z(sse_m)}"
+                        + (f"±{_format_exp_l1_over_z(sse_s)}" if sse_s is not None else ""),
+                    )
+                l1z_m = entry.get("exp_residual_l1_znorm_mean")
+                l1z_s = entry.get("exp_residual_l1_znorm_std")
+                if l1z_m is not None:
+                    txt_lines.append(
+                        f"L1(Z) {_format_exp_l1_over_z(l1z_m)}"
+                        + (f"±{_format_exp_l1_over_z(l1z_s)}" if l1z_s is not None else ""),
+                    )
+                vl_m = entry.get("value_softmax_mismatch_ratio_mean")
+                vl_s = entry.get("value_softmax_mismatch_ratio_std")
+                if vl_m is None:
+                    vl_m = entry.get("value_logit_group_l2_sq_mean")
+                if vl_s is None:
+                    vl_s = entry.get("value_logit_group_l2_sq_std")
+                if vl_m is not None:
+                    txt_lines.append(
+                        f"||Δo||/||o*|| {vl_m:.3g}"
+                        + (f"±{vl_s:.3g}" if vl_s is not None else ""),
+                    )
+                vlz_m = entry.get("value_mismatch_ratio_znorm_mean")
+                vlz_s = entry.get("value_mismatch_ratio_znorm_std")
+                if vlz_m is not None:
+                    txt_lines.append(
+                        f"||Δo(Z)||/||o*|| {vlz_m:.3g}"
+                        + (f"±{vlz_s:.3g}" if vlz_s is not None else ""),
+                    )
+                g1m_c = entry.get("group_l1_hist_meta") or {}
+                _qcg_c = _group_l1_cgm_over_z_quantiles_line(g1m_c)
+                if _qcg_c:
+                    txt_lines.append(_qcg_c)
+                g1z_c = entry.get("group_l1_znorm_meta") or {}
+                _qcgz_c = _group_l1_znorm_quantiles_line(g1z_c)
+                if _qcgz_c:
+                    txt_lines.append(_qcgz_c)
+                ax.text(
+                    0.02, 0.96,
+                    "\n".join(txt_lines),
+                    transform=ax.transAxes,
+                    fontsize=7,
+                    verticalalignment="top",
+                    zorder=25,
+                    bbox=dict(
+                        facecolor="white",
+                        alpha=0.7,
+                        edgecolor="none",
+                    ),
+                )
+            else:
+                ax.text(
+                    0.5, 0.5, "n/a",
+                    ha="center", va="center", fontsize=10,
+                    alpha=0.6, transform=ax.transAxes,
+                )
+            ax.set_xlim(-1.0, 1.0)
+            if r == n_rows - 1:
+                ax.set_xlabel("cos(key, group_mean_key)")
+            else:
+                ax.set_xticklabels([])
+            if c == 0:
+                ax.set_ylabel(f"{algo}\nfraction")
+            else:
+                ax.set_yticklabels([])
+            if r == 0:
+                ax.set_title(
+                    f"{col['head']}\nG={col['n_groups']}",
+                    fontsize=10,
+                )
+
+    suptitle = (
+        "Group Cosine Table (cols=head+groups; "
+        "orange: max-$e^{\\ell_g}$ group $e^{\\ell_i}m/Z$; "
+        "orange-outline: $e^{\\ell_g}m/Z$; "
+        "green: cumulative $L_1$ share vs threshold on $c_g\\,m$)"
+    )
+    if title:
+        suptitle = f"{title} — {suptitle}"
+    if config_caption:
+        suptitle = f"{suptitle}\n{config_caption}"
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    save_figure(fig, out_dir / f"{filename}.png", dpi=dpi)
+
+
+def _add_cg_eg_scatter_y_exp_quantiles(
+    ax,
+    y: np.ndarray,
+    *,
+    show_legend: bool,
+) -> Dict[str, float]:
+    r"""
+    Horizontal guides for pooled $e^{\ell_g} m/Z$: P25, P50, P90, P100
+    (P100 = max y).
+    """
+    if y.size == 0:
+        return {}
+    q25 = float(np.quantile(y, 0.25))
+    q50 = float(np.quantile(y, 0.50))
+    q90 = float(np.quantile(y, 0.90))
+    q100 = float(np.max(y))
+    specs = [
+        (q25, "P25", ":", "#6b6b6b", 0.95, 0.75),
+        (q50, "P50", "-", "#1f77b4", 1.05, 0.82),
+        (q90, "P90", "--", "#ff7f0e", 1.0, 0.82),
+        (q100, "P100", "-", "#d62728", 1.2, 0.88),
+    ]
+    for qv, name, ls, color, lw, al in specs:
+        ax.axhline(
+            qv,
+            color=color,
+            linestyle=ls,
+            linewidth=lw,
+            alpha=al,
+            zorder=4.5,
+        )
+    if show_legend:
+        handles = [
+            Line2D(
+                [0], [0],
+                color=color,
+                linestyle=ls,
+                linewidth=lw,
+                label=name,
+            )
+            for _, name, ls, color, lw, _ in specs
+        ]
+        ax.legend(
+            handles=handles,
+            loc="upper right",
+            fontsize=5,
+            framealpha=0.92,
+            title=r"$e^{\ell_g}m/Z$",
+            title_fontsize=5,
+        )
+    return {
+        "p25": q25,
+        "p50": q50,
+        "p90": q90,
+        "p100": q100,
+    }
+
+
+def _setup_cg_eg_scatter_axes(
+    ax,
+    entry: Dict,
+    *,
+    draw_axis_labels: bool = True,
+    show_y_quantile_legend: bool = True,
+    show_y_quantile_text: bool = True,
+) -> bool:
+    """
+    Scatter of (c_g m/n_g, exp(l_g) m/Z) per group; c_g is the group L1
+    difference in normalized probability space; l_g is the mean logit in
+    the group.
+    Log-log when all plotted points are strictly positive.
+    """
+    sc = entry.get("cg_eg_scatter")
+    if not sc:
+        return False
+    x = np.asarray(sc.get("x", []), dtype=np.float64)
+    y = np.asarray(sc.get("y", []), dtype=np.float64)
+    if x.size == 0 or x.shape != y.shape:
+        return False
+    m = np.isfinite(x) & np.isfinite(y)
+    x = x[m]
+    y = y[m]
+    if x.size == 0:
+        return False
+    use_log = bool(np.all((x > 0) & (y > 0)))
+    ax.scatter(
+        x,
+        y,
+        s=5,
+        alpha=0.28,
+        c="C0",
+        edgecolors="none",
+        rasterized=True,
+        zorder=3,
+    )
+    if use_log:
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+    qvals = _add_cg_eg_scatter_y_exp_quantiles(
+        ax, y, show_legend=show_y_quantile_legend,
+    )
+    if show_y_quantile_text and qvals:
+        txt = (
+            f"P25={_format_exp_l1_over_z(qvals['p25'])}\n"
+            f"P50={_format_exp_l1_over_z(qvals['p50'])}\n"
+            f"P90={_format_exp_l1_over_z(qvals['p90'])}\n"
+            f"P100={_format_exp_l1_over_z(qvals['p100'])}"
+        )
+        ax.text(
+            0.02,
+            0.98,
+            txt,
+            transform=ax.transAxes,
+            fontsize=6,
+            va="top",
+            ha="left",
+            zorder=6,
+            bbox=dict(
+                facecolor="white",
+                alpha=0.72,
+                edgecolor="none",
+            ),
+        )
+    ax.tick_params(axis="both", labelsize=7)
+    if draw_axis_labels:
+        ax.set_xlabel(r"$c_g\,m/n_g$", fontsize=9)
+        ax.set_ylabel(r"$e^{\ell_g}\,m/Z$", fontsize=9)
+    return True
+
+
+def plot_group_cosine_cg_eg_scatter(
+    group_cosine_stats: Dict[str, Dict],
+    out_dir: Path,
+    plot_cfg: Dict,
+    title: str = "",
+    config_caption: str = "",
+    filename: str = "group_cosine_cg_eg_scatter",
+):
+    """
+    Per-method scatter: c_g m/n_g (x) vs exp(l_g) m/Z (y), same grid as cosine.
+    """
+    if not group_cosine_stats:
+        return
+    setup_style()
+    methods = sorted(group_cosine_stats.keys())
+    n = len(methods)
+    cols = min(3, n)
+    rows_n = (n + cols - 1) // cols
+    figsize = tuple(plot_cfg.get("figsize", [16, 10]))
+    dpi = plot_cfg.get("dpi", 200)
+    fig, axes = plt.subplots(
+        rows_n,
+        cols,
+        figsize=(figsize[0], figsize[1] * rows_n / 2),
+        squeeze=False,
+    )
+    for i, method in enumerate(methods):
+        r, c = divmod(i, cols)
+        ax = axes[r][c]
+        entry = group_cosine_stats[method]
+        if not _setup_cg_eg_scatter_axes(
+            ax,
+            entry,
+            draw_axis_labels=False,
+            show_y_quantile_legend=True,
+        ):
+            ax.text(
+                0.5,
+                0.5,
+                "n/a",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+        ax.set_title(str(method), fontsize=9)
+    for i in range(n, rows_n * cols):
+        r, c = divmod(i, cols)
+        axes[r][c].set_visible(False)
+    suptitle = (
+        r"Per-group scatter: $c_g\,m/n_g$ vs $e^{\ell_g}\,m/Z$ · "
+        r"$c_g=\sum_{i\in g}|e^{\ell_i}/Z\!-\!e^{\bar\ell_g}/Z'|$, "
+        r"$Z'=\sum_g n_g e^{\bar\ell_g}$, "
+        r"$\ell_g=\mathrm{mean}_{i\in g}\ell_i$"
+    )
+    if title:
+        suptitle = f"{title} — {suptitle}"
+    if config_caption:
+        suptitle = f"{suptitle}\n{config_caption}"
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    plt.tight_layout(rect=(0.08, 0.06, 1.0, 0.94))
+    fig.supxlabel(r"$c_g\,m/n_g$", fontsize=11, y=0.02)
+    fig.supylabel(r"$e^{\ell_g}\,m/Z$", fontsize=11, x=0.02)
+    save_figure(fig, out_dir / f"{filename}.png", dpi=dpi)
+
+
+def plot_group_cosine_cg_eg_scatter_table(
+    table_stats: Dict,
+    out_dir: Path,
+    plot_cfg: Dict,
+    title: str = "",
+    config_caption: str = "",
+    filename: str = "group_cosine_cg_eg_scatter_table",
+):
+    """Table layout: same rows/cols as group cosine table, scatter per cell."""
+    rows = table_stats.get("row_algorithms", [])
+    columns = _order_group_cosine_table_columns(
+        list(table_stats.get("columns", [])),
+    )
+    cells = table_stats.get("cells", {})
+    if not rows or not columns:
+        return
+    setup_style()
+    n_rows = len(rows)
+    n_cols = len(columns)
+    dpi = plot_cfg.get("dpi", 200)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(
+            max(4 * n_cols, 10),
+            max(2.6 * n_rows, 6),
+        ),
+        squeeze=False,
+    )
+    for r, algo in enumerate(rows):
+        for c, col in enumerate(columns):
+            ax = axes[r][c]
+            col_key = col["key"]
+            entry = cells.get(algo, {}).get(col_key)
+            if entry:
+                if not _setup_cg_eg_scatter_axes(
+                    ax,
+                    entry,
+                    draw_axis_labels=False,
+                    show_y_quantile_legend=False,
+                ):
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "n/a",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                    )
+            else:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "n/a",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+            if r == n_rows - 1:
+                ax.set_xlabel(r"$c_g\,m/n_g$", fontsize=8)
+            else:
+                ax.set_xticklabels([])
+            if c == 0:
+                ax.set_ylabel(
+                    f"{algo}\n$e^{{\\ell_g}}\\,m/Z$",
+                    fontsize=8,
+                )
+            else:
+                ax.set_yticklabels([])
+            if r == 0:
+                ax.set_title(
+                    f"{col['head']}\nG={col['n_groups']}",
+                    fontsize=10,
+                )
+    suptitle = (
+        r"Scatter $c_g\,m/n_g$ vs $e^{\ell_g}\,m/Z$ "
+        r"($c_g=\sum_{i\in g}|e^{\ell_i}/Z\!-\!e^{\bar\ell_g}/Z'|$, "
+        r"$Z'=\sum_g n_g e^{\bar\ell_g}$, "
+        r"$\ell_g=\mathrm{mean}_{i\in g}\ell_i$)"
+    )
+    if title:
+        suptitle = f"{title} — {suptitle}"
+    if config_caption:
+        suptitle = f"{suptitle}\n{config_caption}"
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    plt.tight_layout(rect=(0.06, 0.04, 1.0, 0.95))
+    save_figure(fig, out_dir / f"{filename}.png", dpi=dpi)
+
+
+def _plot_group_token_probability_profile(
+    ax,
+    entry: Dict,
+    *,
+    order_mode: str = "group_then_key",
+) -> bool:
+    """
+    Plot per-key probabilities after sorting groups by decreasing e^{ell_g}
+    and sorting keys within each group by decreasing e^{ell_i}/Z.
+    """
+    prof = entry.get("group_token_probability_profile") or {}
+    key_probs = np.asarray(
+        prof.get("key_probs", []), dtype=np.float64,
+    )
+    group_probs = np.asarray(
+        prof.get("group_probs", []), dtype=np.float64,
+    )
+    group_probs_over_z = np.asarray(
+        prof.get("group_probs_over_z", []), dtype=np.float64,
+    )
+    boundaries = np.asarray(
+        prof.get("group_boundaries", []), dtype=np.int32,
+    )
+    if key_probs.size == 0 or key_probs.shape != group_probs.shape:
+        return False
+    key_probs_orig = key_probs.copy()
+    group_probs_orig = group_probs.copy()
+    boundaries_orig = boundaries.copy()
+    if group_probs_over_z.shape != key_probs.shape:
+        group_probs_over_z = np.array([], dtype=np.float64)
+    # Main group probability for this plot: normalize by Z so it is
+    # directly comparable to p_i = exp(l_i)/Z.
+    if group_probs_over_z.size > 0:
+        group_probs_main = group_probs_over_z.copy()
+    else:
+        group_probs_main = group_probs.copy()
+    if order_mode == "key_logit":
+        ord_idx = np.argsort(-key_probs)
+        key_probs = key_probs[ord_idx]
+        group_probs = group_probs[ord_idx]
+        group_probs_main = group_probs_main[ord_idx]
+        if group_probs_over_z.size > 0:
+            group_probs_over_z = group_probs_over_z[ord_idx]
+        boundaries = np.array([], dtype=np.int32)
+    cum_cg_x = np.array([], dtype=np.float64)
+    cum_cg_y = np.array([], dtype=np.float64)
+    if boundaries.size > 0 and int(boundaries[-1]) == int(key_probs.size):
+        starts = np.concatenate(
+            [np.array([0], dtype=np.int32), boundaries[:-1]],
+        )
+        cg_vals: List[float] = []
+        x_vals: List[float] = []
+        for s, e in zip(starts, boundaries):
+            si = int(s)
+            ei = int(e)
+            if ei <= si:
+                continue
+            cg_vals.append(
+                float(np.sum(np.abs(key_probs[si:ei] - group_probs_main[si:ei]))),
+            )
+            x_vals.append(float(ei))
+        if cg_vals:
+            cg_arr = np.asarray(cg_vals, dtype=np.float64)
+            cg_total = float(np.sum(cg_arr))
+            if cg_total > 0.0:
+                cum_cg_y = np.cumsum(cg_arr) / cg_total
+            else:
+                cum_cg_y = np.zeros_like(cg_arr)
+            cum_cg_x = np.asarray(x_vals, dtype=np.float64)
+    elif key_probs.size > 0:
+        tok_diff = np.abs(key_probs - group_probs_main)
+        tok_total = float(np.sum(tok_diff))
+        if tok_total > 0.0:
+            cum_cg_y = np.cumsum(tok_diff) / tok_total
+        else:
+            cum_cg_y = np.zeros_like(tok_diff)
+        cum_cg_x = np.arange(
+            1, key_probs.size + 1, dtype=np.float64,
+        )
+    x = np.arange(1, key_probs.size + 1, dtype=np.int32)
+    # Continuous curve (the one that reads as a single trace) should
+    # draw on top: key-sorted → blue; group-sorted → orange.
+    if order_mode == "key_logit":
+        z_key_line = 5.2
+        z_group_line = 3.8
+        z_zprime_line = 3.2
+    else:
+        z_key_line = 3.8
+        z_group_line = 5.2
+        z_zprime_line = 4.6
+    above = key_probs >= group_probs_main
+    below = ~above
+    ax.fill_between(
+        x, key_probs, group_probs_main,
+        where=above,
+        color="#d62728",
+        alpha=0.22,
+        interpolate=True,
+        zorder=1,
+    )
+    ax.fill_between(
+        x, key_probs, group_probs_main,
+        where=below,
+        color="#2ca02c",
+        alpha=0.22,
+        interpolate=True,
+        zorder=1,
+    )
+    if order_mode == "key_logit":
+        ax.plot(
+            x,
+            key_probs,
+            color="C0",
+            lw=0.5,
+            alpha=0.9,
+            zorder=z_key_line,
+            label=r"$e^{\ell_i}/Z$",
+        )
+    else:
+        seg_starts = [0]
+        if boundaries.size > 0:
+            seg_starts.extend([int(b) for b in boundaries[:-1]])
+        seg_ends = [int(b) for b in boundaries] if boundaries.size > 0 else [key_probs.size]
+        for si, (s, e) in enumerate(zip(seg_starts, seg_ends)):
+            if e <= s:
+                continue
+            xs = x[s:e]
+            ys = key_probs[s:e]
+            ax.plot(
+                xs,
+                ys,
+                color="C0",
+                lw=0.5,
+                alpha=0.9,
+                zorder=z_key_line,
+                label=r"$e^{\ell_i}/Z$" if si == 0 else None,
+            )
+    ax.plot(
+        x,
+        group_probs_main,
+        color="#ff7f0e",
+        lw=1.25,
+        alpha=0.95,
+        zorder=z_group_line,
+        label=r"$e^{\ell_g}/Z$",
+    )
+    if group_probs_over_z.size > 0:
+        ax.plot(
+            x,
+            group_probs,
+            color="#ff7f0e",
+            lw=1.05,
+            alpha=0.9,
+            linestyle=":",
+            zorder=z_zprime_line,
+        )
+    if cum_cg_x.size > 0 and cum_cg_y.size > 0:
+        ax_cg = ax.twinx()
+        ax_cg.plot(
+            cum_cg_x,
+            cum_cg_y,
+            color="black",
+            lw=1.1,
+            linestyle="-.",
+            alpha=0.9,
+            zorder=max(z_key_line, z_group_line) + 0.5,
+            label=r"cum $|p_i-\tilde p_i|$ (norm.)",
+        )
+        ax_cg.set_ylim(0.0, 1.02)
+        ax_cg.set_yticks([0.0, 0.5, 1.0])
+        ax_cg.tick_params(axis="y", labelsize=6, colors="black")
+        ax_cg.set_ylabel(r"cum $|p_i-\tilde p_i|$", fontsize=7, color="black")
+    p50_key = float(np.quantile(key_probs_orig, 0.50))
+    if boundaries_orig.size > 0:
+        g_starts = np.concatenate(
+            [np.array([0], dtype=np.int32), boundaries_orig[:-1]],
+        )
+        if group_probs_over_z.size > 0:
+            g_vals = group_probs_over_z[g_starts]
+        else:
+            g_vals = group_probs_orig[g_starts]
+    else:
+        if group_probs_over_z.size > 0:
+            g_vals = group_probs_over_z
+        else:
+            g_vals = group_probs_orig
+    p50_group = float(np.quantile(g_vals, 0.50))
+    ax.text(
+        0.02,
+        0.98,
+        "P50 $e^{\\ell_i}$="
+        f"{_format_exp_l1_over_z(p50_key)}\n"
+        "P50 $e^{\\ell_g}/Z$="
+        f"{_format_exp_l1_over_z(p50_group)}",
+        transform=ax.transAxes,
+        fontsize=6,
+        va="top",
+        ha="left",
+        zorder=6,
+        bbox=dict(
+            facecolor="white",
+            alpha=0.72,
+            edgecolor="none",
+        ),
+    )
+    ax.tick_params(axis="both", labelsize=7)
+    return True
+
+
+def plot_group_token_probability_table(
+    table_stats: Dict,
+    out_dir: Path,
+    plot_cfg: Dict,
+    title: str = "",
+    config_caption: str = "",
+    filename: str = "group_token_probability_table",
+):
+    """
+    Table layout: rows are algorithms, columns are (head, #groups).
+
+    Sorting is controlled by ``plot_cfg["group_token_probability_order"]``:
+    ``key_logit`` (default) sorts all keys by decreasing p_i; ``group_then_key``
+    sorts by group then key within each group. The continuous curve is drawn on
+    top in each mode (blue in key order, orange in group order).
+    """
+    rows = table_stats.get("row_algorithms", [])
+    columns = _order_group_cosine_table_columns(
+        list(table_stats.get("columns", [])),
+    )
+    cells = table_stats.get("cells", {})
+    if not rows or not columns:
+        return
+    setup_style()
+    order_mode = str(
+        plot_cfg.get("group_token_probability_order", "key_logit"),
+    ).strip().lower()
+    if order_mode not in {"group_then_key", "key_logit"}:
+        order_mode = "key_logit"
+    n_rows = len(rows)
+    n_cols = len(columns)
+    base_dpi = int(plot_cfg.get("dpi", 200))
+    dpi = max(base_dpi, 800)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(
+            max(4 * n_cols, 10),
+            max(2.8 * n_rows, 6),
+        ),
+        squeeze=False,
+    )
+    legend_handles = [
+        Line2D([0], [0], color="C0", lw=1.0, label=r"$e^{\ell_i}/Z$"),
+        Line2D([0], [0], color="#ff7f0e", lw=1.25, label=r"$e^{\ell_g}/Z$"),
+        Line2D([0], [0], color="black", lw=1.1, linestyle="-.", label=r"cum $|p_i-\tilde p_i|$ (norm.)"),
+        Patch(facecolor="#d62728", alpha=0.22, label=r"$e^{\ell_i}/Z \geq e^{\ell_g}/Z$"),
+        Patch(facecolor="#2ca02c", alpha=0.22, label=r"$e^{\ell_i}/Z < e^{\ell_g}/Z$"),
+    ]
+    col_ylims: Dict[int, tuple] = {}
+    for c, col in enumerate(columns):
+        col_key = col["key"]
+        all_key_vals: List[float] = []
+        for algo in rows:
+            entry = cells.get(algo, {}).get(col_key)
+            if not entry:
+                continue
+            prof = entry.get("group_token_probability_profile") or {}
+            kp = prof.get("key_probs", [])
+            if kp:
+                arr = np.asarray(kp, dtype=np.float64)
+                pos = arr[arr > 0]
+                if pos.size > 0:
+                    all_key_vals.extend(pos.tolist())
+        if all_key_vals:
+            lo = float(min(all_key_vals))
+            hi = float(max(all_key_vals))
+            span = hi - lo if hi > lo else hi
+            margin = 0.05 * span
+            col_ylims[c] = (max(0.0, lo - margin), hi + margin)
+        else:
+            col_ylims[c] = (0.0, 1.0)
+    for r, algo in enumerate(rows):
+        for c, col in enumerate(columns):
+            ax = axes[r][c]
+            col_key = col["key"]
+            entry = cells.get(algo, {}).get(col_key)
+            if entry and _plot_group_token_probability_profile(
+                ax, entry, order_mode=order_mode,
+            ):
+                pass
+            else:
+                ax.text(
+                    0.5, 0.5, "n/a",
+                    ha="center", va="center",
+                    fontsize=10, alpha=0.6,
+                    transform=ax.transAxes,
+                )
+            ax.set_ylim(col_ylims[c])
+            if r == n_rows - 1:
+                ax.set_xlabel("keys in sorted group order", fontsize=8)
+            else:
+                ax.set_xticklabels([])
+            ax.set_ylabel(f"{algo}\nprobability", fontsize=8)
+            if r == 0:
+                ax.set_title(
+                    f"{col['head']}\nG={col['n_groups']}",
+                    fontsize=10,
+                )
+    if order_mode == "key_logit":
+        suptitle = (
+            "Grouped Key Probability Table "
+            "(all keys sorted by decreasing $e^{\\ell_i}/Z$)"
+        )
+    else:
+        suptitle = (
+            "Grouped Key Probability Table "
+            "(groups sorted by decreasing $e^{\\ell_g}$; within-group keys sorted by "
+            "decreasing $e^{\\ell_i}/Z$)"
+        )
+    if title:
+        suptitle = f"{title} — {suptitle}"
+    if config_caption:
+        suptitle = f"{suptitle}\n{config_caption}"
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        ncol=5,
+        fontsize=8,
+        framealpha=0.92,
+        bbox_to_anchor=(0.5, 0.985),
+    )
+    plt.tight_layout(rect=(0.03, 0.03, 1.0, 0.93))
+    save_figure(fig, out_dir / f"{filename}.png", dpi=dpi)

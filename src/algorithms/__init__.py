@@ -17,6 +17,7 @@ from .idealized_methods import (
 from .multiq_grouping import MultiQGrouping
 from .kmeans_clustering import KMeansClustering
 from .lsh_crosspoly_multiprobe import LSHCrossPolytope
+from .lsh_cp_group import LSHCPGroup
 from .lsh_crosspoly_clustered import LSHCrossPolytopeClustered
 from .lsh_simhash_snis import LSHSimHashSNIS
 from .lsh_crosspoly_snis import LSHCrossPolySNIS
@@ -53,6 +54,12 @@ METHOD_REGISTRY = {
         KMeansClustering, "algorithm",
     ),
     "lsh_crosspoly": MethodSpec(
+        LSHCrossPolytope, "algorithm",
+    ),
+    "lsh_cp_group": MethodSpec(
+        LSHCPGroup, "algorithm",
+    ),
+    "lsh_crosspoly_multiprobe": MethodSpec(
         LSHCrossPolytope, "algorithm",
     ),
     "lsh_crosspoly_clustered": MethodSpec(
