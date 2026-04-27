@@ -1,14 +1,6 @@
-# ══════════════════════════════════════════════════════
-# Evaluation Configuration
-# ══════════════════════════════════════════════════════
-#
-# Controls what the evaluation runner evaluates and how.
-# See src/evaluation/README.md for full documentation.
-
-# ── Model ──
 model:
-  hf_name: "meta-llama/Meta-Llama-3.1-8B"
-  mlx_name: "mlx-community/Meta-Llama-3.1-8B-bf16"
+  hf_name: meta-llama/Meta-Llama-3.1-8B
+  mlx_name: mlx-community/Meta-Llama-3.1-8B-bf16
   num_layers: 32
   num_q_heads: 32
   num_kv_heads: 8
@@ -16,143 +8,244 @@ model:
   context_window: 131072
   rope:
     theta: 500000.0
-    method: "standard"
+    method: standard
     scaling: null
-    source: "model.rotary_emb"
-
-# ── Data Paths ──
-# Relative to working directory, or absolute.
+    source: model.rotary_emb
 data:
-  vectors_dir: "data/vectors"
-  results_dir: "results"
-
-# ── Tasks ──
-# Which tasks to evaluate. Must match directories
-# inside vectors_dir/.
+  vectors_dir: data/vectors
+  results_dir: results
 tasks:
-  - math_calc
-  - code_run
-  - longbook_sum_eng
-  - kv_retrieval
-  - multi_doc_qa
-  - single_doc_qa
-
-# ══════════════════════════════════════════════════════
-# Evaluation Scope
-# ══════════════════════════════════════════════════════
-#
-# Three knobs control what gets evaluated:
-#
-#   head_mode    — which heads to run on
-#   n_examples   — how many examples per task (strict)
-#   n_queries    — how many query positions per example
-#
-# head_mode options:
-#
-#   all_heads
-#     Runs every Q head (32) for each layer in
-#     `layers`. Total heads per task =
-#     len(layers) × 32.
-#     Use for: broad scout, head comparison.
-#
-#   selected_heads
-#     Reads which (layer, head) combos to use from
-#     each task's metadata.json.
-#     Use for: main evaluations after head selection.
-#
-#   custom
-#     Explicit (layer, q_head, kv_head) list.
-#     Use for: debug runs, single-head analysis.
-#
-# n_examples is strict: if a task has fewer examples
-# on disk than requested, the run fails immediately.
-
+- math_calc
+- code_run
+- longbook_sum_eng
+- kv_retrieval
+- multi_doc_qa
+- single_doc_qa
+skip_idealized:
+- ideal_equal_splits
+- ideal_sampling_is
 evaluation:
   seed: 42
-  n_queries: 1         # query positions per example (last N tokens)
-  n_examples: 1         # examples per task (strict)
-  use_rope: true        # false to use pre-RoPE (raw) Q and K
-  # Optional norm equalization right after loading vectors.
-  # If enabled, each row vector is rescaled to the median non-zero row
-  # norm of that sequence (done separately for Q and K).
+  n_queries: 1
+  n_examples: 1
+  use_rope: true
   normalize_keys_to_median_norm: false
   normalize_queries_to_median_norm: false
-
-  # Compute per-query attention statistics (entropy,
-  # top-100 mass) alongside error metrics. Nearly free
-  # since we already compute full attention weights.
-  # Saved in per_task/*/data_statistics.json.
   compute_statistics: true
-
-  # If true, computes distributions of
-  # cos(key, group_mean_key) for methods that expose
-  # grouped members, then saves/plots per-task summaries.
   compute_group_cosine_distribution: true
   group_cosine_distribution_bins: 50
-  # If true, center candidate keys (after excluding sink/local window)
-  # by subtracting their mean vector before p_i diagnostics.
   center_candidate_keys_for_pi_plot: true
-
   head_mode: "selected_heads"
-#  head_mode: "custom"
-
-  # Used only when head_mode is "all_heads".
-  layers: "all"                # or "all" for every layer
-
-  # Used only when head_mode is "custom".
+  layers: "all"
   custom_heads:
     - {layer: 0, q_head: 22, kv_head: 5}
-
   exclude_sink_token: true
   local_window:
-    size: 100
-
+    size: 0
   budget_sweep:
     absolute:
-#      - 16
-#      - 32
-#      - 64
-#      - 128
-      - 256
-#      - 512
-#      - 1024
-#      - 2048
-
-
-# ── Algorithm Parameter Sweeps ──
-# Each key matches a METHOD_REGISTRY name.
-# expand_from_config() generates all combos.
+    - 16
+    - 32
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    - 2048
+    - 4096
 algorithm_configs:
   multiq:
-    n_query_clusters: [256]
+    n_query_clusters:
+    - 256
     n_groups: 256
-    modes: ["topk", "hybrid"]
-    top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
+    modes:
+    - topk
+    - hybrid
+    top_k_sweep:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 5
+    - 7
+    - 10
+    - 12
   kmeans:
     n_clusters: 256
-    modes: ["topk", "hybrid"]
-    top_k_sweep: [0, 1, 2, 3, 5, 7, 10, 12]
+    modes:
+    - topk
+    - hybrid
+    top_k_sweep:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 5
+    - 7
+    - 10
+    - 12
   lsh_crosspoly: {}
   lsh_cp_group: {}
   lsh_crosspoly_multiprobe: {}
   lsh_crosspoly_clustered:
-    k_dims: [2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 90, 128]
-    n_repetitions: [1]
+    k_dims:
+    - 2
+    - 3
+    - 4
+    - 6
+    - 8
+    - 11
+    - 16
+    - 23
+    - 32
+    - 45
+    - 64
+    - 90
+    - 128
+    n_repetitions:
+    - 1
   lsh_simhash_snis:
-    K_sweep: [8, 9, 10, 11, 12]
-    L_sweep: [10, 50, 100, 150, 200, 300]
+    K_sweep:
+    - 8
+    - 9
+    - 10
+    - 11
+    L_sweep:
+    - 50
+    - 100
+    - 200
     min_hits: 2
     center_keys: true
   lsh_crosspoly_snis:
-    sweep:
-      64:  [10, 20, 50, 100, 150, 200]
-      96:  [20, 50, 100, 150, 200, 250]
-      128: [50, 100, 150, 200, 250, 300]
+    n_rotations:
+    - 1
+    - 2
+    - 4
+    - 8
+    L_sweep:
+    - 50
+    - 100
+    - 200
+    min_hits: 2
     center_keys: true
-
-# ── Plot Settings ──
+  kmeans_value:
+    n_clusters_sweep:
+    - 128
+    - 512
+    - 1024
+    - 2048
+    - 4096
+  kmeans_key:
+    n_clusters_sweep:
+    - 128
+    - 512
+    - 1024
+    - 2048
+    - 4096
+  value_cluster_is:
+    n_clusters_sweep:
+    - 1024
+    threshold_percentiles:
+    - 50
+    - 75
+    - 90
+    - 95
+  cp_value_cluster:
+    n_rotations:
+    - 1
+    - 2
+    - 4
+    - 8
+    L_sweep:
+    - 10
+    - 50
+    - 100
+    - 150
+    - 200
+    min_hits: 2
+    center_keys: true
+    n_clusters: 1024
+    variants:
+    - snis_residual
+    - subset_residual
+  vcluster_meankey: {}
+  vcluster_sampled:
+    n_clusters_sweep:
+    - 1024
+  vcluster_topk:
+    n_clusters_sweep:
+    - 1024
+  kcluster_sampled:
+    n_clusters_sweep:
+    - 1024
+  vcluster_lastkey:
+    n_last_sweep:
+    - 1
+    - 2
+    - 3
+  vcluster_meanlogit: {}
+  vattention_pq:
+    m_sweep:
+    - 8
+  ivfpq_cluster:
+    n_cells: 1024
+    nprobe_sweep:
+    - 32
+    m: 8
+  kmeans_kk: {}
+  tree_attention:
+    starting_depths:
+    - 2
+    - 3
+    - 4
+    - 5
+    max_depth: 14
+    topk_fracs:
+    - 0.5
+    tree_dir: data/trees
+  kcluster_topk:
+    n_clusters_sweep:
+    - 1024
+    methods:
+    - oracle
+    - pq
+    m_pq: 8
+  oracle_cluster_pq_topk:
+    n_clusters_sweep:
+    - 1024
+    m_pq: 8
+  qclust_topk:
+    n_proto: 8
+    n_train_queries:
+    - 100
+    - 999999
+  qclust_aug_topk:
+    n_proto: 8
+    n_train_queries:
+    - 100
+  keyclust_valsub:
+    n_val_clusters:
+    - 4
+    - 8
+  qclust_valsub:
+    n_proto: 8
+    n_train_queries:
+    - 100
+    n_val_clusters:
+    - 4
+  topk_key_clusters:
+    n_clusters_sweep:
+    - 1024
+  topk_oracle_clusters:
+    n_clusters_sweep:
+    - 1024
+  topk_value_clusters:
+    n_clusters_sweep:
+    - 4096
 plotting:
-  figsize: [16, 10]
+  figsize:
+  - 16
+  - 10
   dpi: 200
   # Ordering for group_token_probability_table:
   # - key_logit (default): all keys globally by decreasing e^{l_i}/Z (blue curve continuous, on top)
@@ -160,66 +253,157 @@ plotting:
   group_token_probability_order: "key_logit"
   log_scale: true
   linear_scale: true
-  idealized_linestyle: "--"
-  algorithm_linestyle: "-"
+  idealized_linestyle: --
+  algorithm_linestyle: '-'
   error_bands: false
-
   idealized_colors:
-    IdealTopK: "#d62728"                     # red
-    IdealSampling: "#2ca02c"                 # green
-    IdealEqualSplits: "#1f77b4"              # blue
-    IdealEqualWeightSplits: "#9467bd"        # purple
-
+    IdealTopK: '#d62728'
+    IdealSampling: '#2ca02c'
+    IdealEqualSplits: '#1f77b4'
+    vAttention(oracle): '#ff1493'
+    IdealEqualWeightSplits: '#9467bd'
   algorithm_colors:
     kmeans:
-      topk: "#ffb380"
-      hybrid: "#ff7f0e"
-      marker: "D"
+      topk: '#ffb380'
+      hybrid: '#ff7f0e'
+      marker: D
     multiq:
-      topk: "#7fbfff"
-      hybrid: "#1f77b4"
-      marker: "X"
+      topk: '#7fbfff'
+      hybrid: '#1f77b4'
+      marker: X
     lsh_crosspoly:
-      topk: "#17becf"
-      hybrid: "#17becf"
-      marker: "h"
+      topk: '#17becf'
+      hybrid: '#17becf'
+      marker: h
     lsh_crosspoly_clustered:
-      topk: "#e91e9e"
-      hybrid: "#e91e9e"
-      marker: "h"
+      topk: '#e91e9e'
+      hybrid: '#e91e9e'
+      marker: h
     simhash_snis:
-      topk: "#800080"
-      hybrid: "#800080"
-      marker: "X"
+      topk: '#7b1fa2'
+      hybrid: '#7b1fa2'
+      marker: o
     cp_snis:
-      topk: "#2196f3"
-      hybrid: "#2196f3"
-      marker: "P"
-
-
-# ══════════════════════════════════════════════════════
-# Example Configs for Common Scenarios
-# ══════════════════════════════════════════════════════
-#
-# --- Scout: 1 example, all heads, all 4 layers ---
-# evaluation:
-#   n_examples: 1
-#   n_queries: 50
-#   head_mode: "all_heads"
-#   layers: [0, 17, 19, 31]
-#
-# --- Full evaluation: 10 examples, selected heads ---
-# evaluation:
-#   n_examples: 10
-#   n_queries: 100
-#   head_mode: "selected_heads"
-#
-# --- Debug: 1 example, one head, tiny sweep ---
-# evaluation:
-#   n_examples: 1
-#   n_queries: 10
-#   head_mode: "custom"
-#   custom_heads:
-#     - {layer: 17, q_head: 0, kv_head: 0}
-#   budget_sweep:
-#     absolute: [32, 256]
+      topk: '#1f77b4'
+      hybrid: '#1f77b4'
+      marker: X
+    kmeans_value:
+      topk: '#e91e63'
+      hybrid: '#e91e63'
+      marker: v
+    kmeans_key:
+      topk: '#00897b'
+      hybrid: '#00897b'
+      marker: ^
+    cpvc:
+      topk: '#4caf50'
+      hybrid: '#4caf50'
+      marker: P
+    vcis_c1024_p50:
+      topk: '#ffe082'
+      hybrid: '#ffe082'
+      marker: s
+    vcis_c1024_p75:
+      topk: '#ffb74d'
+      hybrid: '#ffb74d'
+      marker: s
+    vcis_c1024_p90:
+      topk: '#ff9800'
+      hybrid: '#ff9800'
+      marker: s
+    vcis_c1024_p95:
+      topk: '#e65100'
+      hybrid: '#e65100'
+      marker: s
+    vcluster_meankey:
+      topk: '#6a1b9a'
+      hybrid: '#6a1b9a'
+      marker: o
+    vcluster_sampled:
+      topk: '#00695c'
+      hybrid: '#00695c'
+      marker: s
+    vcluster_topk:
+      topk: '#fbc02d'
+      hybrid: '#fbc02d'
+      marker: d
+    vattention_pq:
+      topk: '#795548'
+      hybrid: '#795548'
+      marker: P
+    kmeans_kk:
+      topk: '#ff7f0e'
+      hybrid: '#ff7f0e'
+      marker: ^
+    kmeans-kk:
+      topk: '#ff7f0e'
+      hybrid: '#ff7f0e'
+      marker: ^
+    pqtopk_kcluster:
+      topk: '#ff7f0e'
+      hybrid: '#ff7f0e'
+      marker: D
+    oracletopk_kcluster:
+      topk: '#fbc02d'
+      hybrid: '#fbc02d'
+      marker: s
+    pqtopk_oraclecluster:
+      topk: '#1f77b4'
+      hybrid: '#1f77b4'
+      marker: h
+    kcluster_sampled:
+      topk: '#bf360c'
+      hybrid: '#bf360c'
+      marker: D
+    vcluster_last1key:
+      topk: '#1565c0'
+      hybrid: '#1565c0'
+      marker: v
+    vcluster_last2key:
+      topk: '#0277bd'
+      hybrid: '#0277bd'
+      marker: v
+    vcluster_last3key:
+      topk: '#01579b'
+      hybrid: '#01579b'
+      marker: v
+    vcluster_meanlogit:
+      topk: '#ad1457'
+      hybrid: '#ad1457'
+      marker: X
+    treekm:
+      topk: '#2e7d32'
+      hybrid: '#2e7d32'
+      marker: '*'
+    keyclust_topk:
+      topk: '#ff7f0e'
+      hybrid: '#ff7f0e'
+      marker: D
+    oracleclust_topk:
+      topk: '#fbc02d'
+      hybrid: '#fbc02d'
+      marker: s
+    valclust_topk:
+      topk: '#006064'
+      hybrid: '#006064'
+      marker: v
+    qclust8_l100_topk:
+      topk: '#42a5f5'
+      hybrid: '#42a5f5'
+      marker: o
+    qclust8_all_topk:
+      topk: '#1a237e'
+      hybrid: '#1a237e'
+      marker: s
+    qaug8_l100_topk:
+      topk: '#2e7d32'
+      hybrid: '#2e7d32'
+      marker: D
+    keyclust_v4_topk:
+      topk: '#e65100'
+      hybrid: '#e65100'
+      marker: '^'
+    keyclust_v8_topk:
+      topk: '#bf360c'
+      hybrid: '#bf360c'
+      marker: v

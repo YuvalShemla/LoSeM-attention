@@ -22,6 +22,9 @@ build/
 *.jsonl
 *.npz
 *.npy
+# Exception: CP collision probability tables (small, required by algorithm)
+!data/cp2_collision_table*.npz
+!data/cp_concat_collision_table*.npz
 data/vectors
 data/benchmarks
 data/head_statistics

@@ -1,62 +1,34 @@
 """
-Cross-Polytope LSH with SNIS correction.
+Cross-Polytope LSH with Self-Normalized Importance Sampling (SNIS).
 
-Product of two cross-polytope hashes per table with min_hits=1
-(any single table collision retrieves a key). Sweeping k_dim
-controls the partition granularity:
+Each hash table concatenates m independent random rotations of
+the input vector and takes argmax(|concatenated|) with sign:
+  z = [R_1 x, R_2 x, ..., R_m x]     (m*d dimensions)
+  label = 2 * argmax(|z|) + sign_bit  (C = 2*m*d buckets)
 
-  k_dim=128 (full):  (2*128)^2 = 65536 buckets/table — finest
-  k_dim=64:          (2*64)^2  = 16384 buckets/table
-  k_dim=32:          (2*32)^2  =  4096 buckets/table
-  k_dim=16:          (2*16)^2  =  1024 buckets/table — coarsest
+This allows matching SimHash bucket counts exactly:
+  m=1  → C=256  (matches SimHash K=8)
+  m=2  → C=512  (matches SimHash K=9)
+  m=4  → C=1024 (matches SimHash K=10)
+  m=8  → C=2048 (matches SimHash K=11)
 
-
-We tested several other configurations and found this one best:
-
-  - CP1 (single CP/table, min_hits 2-3): too coarse — only
-    2d=256 buckets, most keys collide regardless of distance.
-  - CP2 with min_hits=2: too selective at low L — requiring 2+
-    collisions across tables with 65K buckets filters out too
-    many relevant keys.
-  - Stacking n_cp>2 CPs: bucket count grows as (2k)^n_cp,
-    quickly making collisions extremely rare.
-
-CP2 with min_hits=1 is what was chosen: the product partition
-is fine enough that each collision is meaningful, and a single
-hit suffices.
-
-Collision probability (Theorem 1, Andoni et al. 2015,
-"Practical and Optimal LSH for Angular Distance"):
-
-  For a single cross-polytope hash in k dimensions applied to
-  unit vectors with Euclidean distance tau:
-
-    ln(1/Pr[h(p)=h(q)]) = tau^2/(4-tau^2) * ln(k) + O(ln ln k)
-
-  Using cosine similarity cos = 1 - tau^2/2:
-
-    rho = (1 - cos) / (1 + cos)
-    p_single = k^(-rho)
-
-  For our product of two independent k-dim CP hashes:
-
-    p_table = k^(-2 * rho)
-
-  Inclusion probability (min_hits=1 across L tables):
-
-    P(retrieved) = 1 - (1 - p_table)^L
+Unlike SimHash, CP has no closed-form collision probability.
+Instead, per-table collision rates are measured via Monte Carlo
+(5M synthetic rotation pairs) and stored as lookup tables in
+data/cp_concat_collision_table_m{m}.npz. These are loaded at
+runtime and interpolated by cosine similarity.
 
 Key centering: before hashing, all keys and the query are
-centered by subtracting the mean key vector. This is critical
-(as in MagicPIG/SimHash) because raw key vectors in
-transformer attention are not zero-mean — centering removes
-the shared component so the hash is sensitive to the angular
-differences between keys. The CP hash is scale-invariant
-(argmax|Rx| doesn't change with scaling), so the collision
-probability depends only on the angle between centered vectors.
+centered by subtracting the mean key vector. The CP hash is
+scale-invariant (argmax|Rx| doesn't change with scaling), so
+the collision probability depends only on the angle between
+centered vectors.
 
-Each (k_dim, L) combo produces a fixed emergent budget.
+Each (m, L) combo produces a fixed emergent budget.
 sweeps_budget=False; each instance is one dot on the plot.
+
+Reference: Andoni et al., 2015 — "Practical and Optimal LSH
+for Angular Distance" (cross-polytope hash).
 """
 
 import numpy as np
@@ -71,34 +43,42 @@ from ..core import snis_attention
 
 class LSHCrossPolySNIS(AttentionAlgorithm):
     """
-    Product-of-two-CP LSH with SNIS, min_hits=1.
+    Concatenation-CP LSH with SNIS correction.
 
-    Parameters:
-        k_dim: CP hash dimension (uses first k_dim rows of a
-               random d×d orthogonal rotation; k_dim=d for full)
-        L: number of independent hash tables
-        center_keys: whether to center keys before hashing
+    Args:
+        n_rotations: number of concatenated rotations per table.
+            Controls bucket count C = 2 * n_rotations * head_dim.
+        L: number of independent hash tables.
+        min_hits: minimum table collisions to retrieve a key.
+        center_keys: subtract mean key vector before hashing.
+
+    Returns (from run()):
+        AttentionOutput with:
+          output: [d] SNIS-corrected attention vector
+          actual_budget: number of keys used (special + retrieved)
+          selected_indices: indices of all keys used
     """
 
     _next_id = 0
 
     def __init__(
         self,
-        k_dim: int = 128,
+        n_rotations: int = 2,
         L: int = 50,
+        min_hits: int = 2,
         center_keys: bool = True,
     ):
-        self._k = k_dim
+        self._m = n_rotations
         self._L = L
+        self._min_hits = min_hits
         self._center_keys = center_keys
         self._id = LSHCrossPolySNIS._next_id
         LSHCrossPolySNIS._next_id += 1
 
         # Populated by prepare()
-        self._all_R1 = None    # [L, k, d]
-        self._all_R2 = None    # [L, k, d]
-        self._key_labels = None  # [n, L]
-        self._key_mean = None
+        self._rotations = None  # [L][m] list of [d, d] matrices
+        self._key_labels = None  # [n, L] int32 bucket labels
+        self._key_mean = None    # [d] key centroid
         self._d = None
 
     @property
@@ -107,7 +87,8 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
 
     @property
     def point_label(self) -> str:
-        return f"{self._k}/{self._L}"
+        C = 2 * self._m * (self._d or 128)
+        return f"C{C}/L{self._L}"
 
     @property
     def sweeps_budget(self) -> bool:
@@ -124,11 +105,26 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
         query_positions: Optional[List[int]] = None,
         seed: int = 42,
     ) -> None:
+        """Build L hash tables from the key vectors.
+
+        For each table, m independent d×d random orthogonal
+        rotations are applied. The rotated vectors are
+        concatenated into a single m*d vector, and the bucket
+        label is argmax(|concat|) with sign → C = 2*m*d buckets.
+
+        Args:
+            keys: [n, d] key vectors
+            values: [n, d] value vectors (stored but not hashed)
+            head_dim: dimension d
+            seed: RNG seed for reproducible rotations
+
+        Returns:
+            None (populates self._rotations, self._key_labels)
+        """
         d = head_dim
         self._d = d
-        k = self._k
+        m = self._m
         L = self._L
-        n_verts = 2 * k  # vertices per single CP hash
 
         rng = np.random.default_rng(seed)
 
@@ -142,7 +138,8 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
             )
             return
 
-        # Center keys
+        # Center keys — removes shared component so the hash
+        # is sensitive to angular differences between keys
         key_mean = np.mean(
             keys, axis=0, dtype=np.float64,
         ).astype(np.float32)
@@ -155,60 +152,54 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
 
         x64 = keys_c.astype(np.float64)
 
-        # Build L tables, each with two k-dim rotations
-        all_R1 = []
-        all_R2 = []
+        all_rotations = []
         labels = np.empty((n, L), dtype=np.int32)
 
         for l in range(L):
-            Q1 = _random_orthogonal(d, rng)
-            Q2 = _random_orthogonal(d, rng)
-            R1 = Q1[:k].astype(np.float64)
-            R2 = Q2[:k].astype(np.float64)
-            all_R1.append(Q1[:k].astype(np.float32))
-            all_R2.append(Q2[:k].astype(np.float32))
+            Rs = []
+            z_parts = []
+            for _ in range(m):
+                # Each rotation is a Haar-random d×d orthogonal matrix
+                Q = _random_orthogonal(d, rng)
+                Rs.append(Q.astype(np.float32))
+                # Rotate all keys: [n, d] @ [d, d]^T → [n, d]
+                z = (x64 @ Q.T).astype(np.float32)
+                z_parts.append(z)
 
-            z1 = (x64 @ R1.T).astype(np.float32)
-            z2 = (x64 @ R2.T).astype(np.float32)
-            b1 = self._cp_labels_2d(z1)
-            b2 = self._cp_labels_2d(z2)
-            labels[:, l] = b1 * n_verts + b2
+            all_rotations.append(Rs)
 
-        self._all_R1 = np.stack(all_R1)  # [L, k, d]
-        self._all_R2 = np.stack(all_R2)
+            # Concatenate m rotated copies → [n, m*d]
+            # then argmax picks the single largest coordinate
+            z_concat = np.concatenate(
+                z_parts, axis=1,
+            )
+            abs_z = np.abs(z_concat)
+            idx = np.argmax(abs_z, axis=1)
+            signs = z_concat[np.arange(n), idx]
+            # Label = 2 * coordinate_index + sign_bit
+            labels[:, l] = (
+                2 * idx
+                + (signs < 0).astype(np.int32)
+            )
+
+        self._rotations = all_rotations
         self._key_labels = labels
-
-    @staticmethod
-    def _cp_labels_2d(
-        proj: np.ndarray,
-    ) -> np.ndarray:
-        """
-        CP bucket labels for [n, k] matrix.
-        Returns [n] labels in {0, ..., 2k-1}.
-        """
-        abs_proj = np.abs(proj)
-        idx = np.argmax(abs_proj, axis=1)
-        signs = proj[np.arange(len(proj)), idx]
-        sign_bit = (signs < 0).astype(np.int32)
-        return 2 * idx + sign_bit
-
-    @staticmethod
-    def _cp_label_1d(proj: np.ndarray) -> int:
-        """CP bucket label for a single [k] vector."""
-        abs_proj = np.abs(proj)
-        idx = int(np.argmax(abs_proj))
-        sign_bit = 1 if proj[idx] < 0 else 0
-        return 2 * idx + sign_bit
 
     # ── query hashing ──────────────────────────────────
 
     def _hash_query(
         self, query: np.ndarray,
     ) -> np.ndarray:
-        """Hash query, returns [L] product bucket labels."""
-        k = self._k
+        """Hash a single query vector into L bucket labels.
+
+        Args:
+            query: [d] query vector
+
+        Returns:
+            [L] int32 bucket labels, one per table
+        """
         L = self._L
-        n_verts = 2 * k
+        m = self._m
 
         if self._center_keys:
             q_c = (
@@ -220,42 +211,96 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
 
         labels = np.empty(L, dtype=np.int32)
         for l in range(L):
-            R1 = self._all_R1[l].astype(np.float64)
-            R2 = self._all_R2[l].astype(np.float64)
-            z1 = (R1 @ q_c).astype(np.float32)
-            z2 = (R2 @ q_c).astype(np.float32)
-            b1 = self._cp_label_1d(z1)
-            b2 = self._cp_label_1d(z2)
-            labels[l] = b1 * n_verts + b2
+            z_parts = []
+            for R in self._rotations[l]:
+                z = (R.astype(np.float64) @ q_c).astype(
+                    np.float32,
+                )
+                z_parts.append(z)
+            # Same concat + argmax as in prepare()
+            z_concat = np.concatenate(z_parts)
+            abs_z = np.abs(z_concat)
+            idx = int(np.argmax(abs_z))
+            sign_bit = 1 if z_concat[idx] < 0 else 0
+            labels[l] = 2 * idx + sign_bit
 
         return labels
 
     # ── inclusion probability ──────────────────────────
+    #
+    # Unlike SimHash, CP has no closed-form collision formula.
+    # We use MC-measured lookup tables (5M synthetic rotation
+    # pairs, 0.001 cosine-sim resolution, range [-1, 1]).
+    # One table per n_rotations value m, stored in
+    # data/cp_concat_collision_table_m{m}.npz.
+
+    _collision_tables = {}  # m → (cos_bins, p_table)
+
+    @classmethod
+    def _load_collision_table(cls, m):
+        """Lazy-load and cache the collision table for m rotations."""
+        if m in cls._collision_tables:
+            return cls._collision_tables[m]
+        import os
+        fname = f"cp_concat_collision_table_m{m}.npz"
+        path = os.path.join(
+            os.path.dirname(__file__),
+            "../../data", fname,
+        )
+        path = os.path.normpath(path)
+        d = np.load(path)
+        table = (
+            d["cos_bins"].astype(np.float64),
+            d["p_table"].astype(np.float64),
+        )
+        cls._collision_tables[m] = table
+        return table
 
     def _compute_inclusion_prob(
         self, cos_sims: np.ndarray,
     ) -> np.ndarray:
-        """
-        Inclusion probability from the CP collision formula.
+        """Compute inclusion probability from MC lookup table.
 
-        Per-table collision probability (Theorem 1, Andoni+15):
-          rho = (1 - cos) / (1 + cos)
-          p_table = k^(-2 * rho)   [product of two k-dim CPs]
+        Per-table collision probability is looked up by cosine
+        similarity via linear interpolation. Then the Binomial
+        CDF complement gives P(hits >= min_hits out of L).
 
-        Inclusion with min_hits=1:
-          P(retrieved) = 1 - (1 - p_table)^L
+        Args:
+            cos_sims: [n] cosine similarities between centered
+                      query and each retrieved key
+
+        Returns:
+            [n] inclusion probabilities in (0, 1]
         """
         L = self._L
-        k = float(self._k)
+        min_hits = self._min_hits
+        cos_bins, p_tab = self._load_collision_table(
+            self._m,
+        )
 
         cos_sims = np.clip(
-            cos_sims, -1.0 + 1e-7, 1.0 - 1e-7,
+            cos_sims, cos_bins[0], cos_bins[-1],
         )
-        rho = (1.0 - cos_sims) / (1.0 + cos_sims)
-        p_table = np.power(k, -2.0 * rho)
-        p_table = np.clip(p_table, 1e-30, 1.0)
+        # Look up per-table collision probability
+        p = np.interp(cos_sims, cos_bins, p_tab)
+        p = np.clip(p, 1e-30, 1.0)
+        q = 1.0 - p
 
-        prob = 1.0 - np.power(1.0 - p_table, L)
+        if min_hits <= 1:
+            # P(at least 1 hit) = 1 - P(0 hits)
+            prob = 1.0 - np.power(q, L)
+        else:
+            # P(>= min_hits) via Binomial CDF:
+            # subtract P(0 hits), P(1 hit), ..., P(min_hits-1)
+            from scipy.special import comb
+            prob = 1.0 - np.power(q, L)
+            for h in range(1, min_hits):
+                prob -= (
+                    comb(L, h)
+                    * np.power(p, h)
+                    * np.power(q, L - h)
+                )
+
         return np.clip(prob, 1e-30, 1.0)
 
     # ── online ─────────────────────────────────────────
@@ -266,6 +311,23 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
         budget: int,
         rng: np.random.Generator,
     ) -> AttentionOutput:
+        """Retrieve keys via CP hash and compute SNIS attention.
+
+        Steps:
+          1. Hash query into L tables
+          2. Find candidate keys with >= min_hits collisions
+          3. Compute cosine similarity → inclusion probability
+             (looked up from MC collision table)
+          4. Apply SNIS: softmax(logit_i - log(u_i)) @ v_i
+
+        Args:
+            problem: query, keys, values, logits, special/candidate split
+            budget: ignored (budget is emergent from hash parameters)
+            rng: not used (deterministic hashing)
+
+        Returns:
+            AttentionOutput with SNIS-corrected attention vector
+        """
         if self._key_labels is None:
             raise RuntimeError(
                 "Call prepare() before run()"
@@ -290,13 +352,15 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
                 actual_budget=len(special_idx),
             )
 
+        # Count per-key collisions across L tables
         cand_labels = self._key_labels[candidate_idx]
         matches = (
             cand_labels == q_labels[np.newaxis, :]
         )
         match_counts = np.sum(matches, axis=1)
 
-        retrieved_mask = match_counts >= 1
+        # Retrieve keys with enough collisions
+        retrieved_mask = match_counts >= self._min_hits
         retrieved_local = np.where(retrieved_mask)[0]
 
         if len(retrieved_local) == 0:
@@ -311,6 +375,8 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
 
         retrieved_idx = candidate_idx[retrieved_local]
 
+        # Cosine similarity between centered query and keys
+        # (needed to look up inclusion probability from table)
         if self._center_keys:
             q_c = (
                 query.astype(np.float64)
@@ -335,6 +401,7 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
             cos_sims,
         )
 
+        # SNIS: softmax(logit - log(u)) @ values
         output = snis_attention(
             logits=logits[retrieved_idx],
             values=values[retrieved_idx],
@@ -361,20 +428,17 @@ class LSHCrossPolySNIS(AttentionAlgorithm):
     def expand_from_config(cfg: dict) -> list:
         instances = []
         center = cfg.get("center_keys", True)
+        min_hits = cfg.get("min_hits", 2)
+        L_sweep = cfg.get(
+            "L_sweep", [50, 100, 150, 200, 300],
+        )
+        m_values = cfg.get("n_rotations", [1, 2, 4])
 
-        # Default: per-k_dim L ranges — finer partitions
-        # need more tables to retrieve enough keys.
-        default_sweep = {
-            64:  [10, 20, 50, 100, 150, 200],
-            96:  [20, 50, 100, 150, 200, 250],
-            128: [50, 100, 150, 200, 250, 300],
-        }
-        sweep = cfg.get("sweep", default_sweep)
-
-        for k, L_values in sweep.items():
-            k = int(k)
-            for L in L_values:
+        for m in m_values:
+            for L in L_sweep:
                 instances.append(LSHCrossPolySNIS(
-                    k_dim=k, L=L, center_keys=center,
+                    n_rotations=m, L=L,
+                    min_hits=min_hits,
+                    center_keys=center,
                 ))
         return instances

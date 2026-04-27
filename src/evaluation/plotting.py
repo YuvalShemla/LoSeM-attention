@@ -353,13 +353,31 @@ def setup_style():
 
 
 def save_figure(fig, path, dpi=200):
-    """Save figure with tight layout."""
+    """Save figure with tight layout, capping pixel size."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(
-        path, dpi=dpi, bbox_inches="tight",
-        facecolor="white",
-    )
+    # Cap figure so pixel dimensions stay under 2^16
+    max_px = 65000
+    w_in, h_in = fig.get_size_inches()
+    if h_in * dpi > max_px:
+        fig.set_size_inches(w_in, max_px / dpi)
+    if w_in * dpi > max_px:
+        fig.set_size_inches(max_px / dpi, fig.get_size_inches()[1])
+    try:
+        fig.savefig(
+            path, dpi=dpi, bbox_inches="tight",
+            facecolor="white",
+        )
+    except ValueError:
+        try:
+            fig.savefig(
+                path, dpi=dpi, facecolor="white",
+            )
+        except ValueError:
+            fig.savefig(
+                path, dpi=max(50, dpi // 2),
+                facecolor="white",
+            )
     plt.close(fig)
 
 
@@ -410,16 +428,20 @@ def plot_idealized_methods(
     agg: Dict,
     budgets: List[int],
     plot_cfg: Dict,
+    skip_prefixes: Optional[set] = None,
 ):
     """Plot idealized method curves."""
     colors = plot_cfg.get("idealized_colors", {})
     show_bands = plot_cfg.get("error_bands", True)
 
     idealized_specs = [
-        ("IdealTopK", "IdealTopK"),
-        ("IdealSampling", "IdealSampling"),
-        ("IdealEqualSplits", "IdealEqualSplits"),
-        ("IdealEqualWeightSplits", "EWS (clean)"),
+        ("IdealTopK", "Ideal TopK"),
+        ("IdealSampling-Subset", "Ideal Sampling (Subset)"),
+        ("IdealSampling-IS", "Ideal Sampling (IS)"),
+        ("IdealTopK+Uniform", "Ideal TopK+Uniform"),
+        ("vAttention(oracle)", "vAttention(oracle)"),
+        ("IdealEqualWeightSplits",
+         "Ideal Equal Weight Splits"),
         ("EWS+NoiseK", "EWS+NoiseK"),
         ("EWS+NoiseV", "EWS+NoiseV"),
         ("EWS+NoiseKV", "EWS+NoiseKV"),
@@ -429,7 +451,10 @@ def plot_idealized_methods(
     ]
     default_colors = {
         "IdealTopK": "#d62728",
-        "IdealSampling": "#2ca02c",
+        "IdealSampling-Subset": "#2ca02c",
+        "IdealSampling-IS": "#17becf",
+        "IdealTopK+Uniform": "#ff6f00",
+        "vAttention(oracle)": "#ff1493",  # hot pink
         "IdealEqualSplits": "#1f77b4",
         "IdealEqualWeightSplits": "#9467bd",
         "EWS+NoiseK": "#00bfff",
@@ -487,6 +512,8 @@ def plot_idealized_methods(
         if agg[key].get("point_label"):
             continue
         if prefix in seen_prefixes:
+            continue
+        if skip_prefixes and prefix in skip_prefixes:
             continue
         # Collect all budget points for this prefix
         x, y, s = [], [], []
@@ -603,6 +630,7 @@ def plot_algorithm_family(
         )
         bx, by, bs, pt_labels = [], [], [], []
         has_pt_labels = False
+        has_hlines = False
         for k in sorted(
             agg.keys(),
             key=lambda k: agg[k].get(
@@ -612,17 +640,49 @@ def plot_algorithm_family(
             if pat.match(k):
                 e = agg[k]
                 pl = e.get("point_label", "")
+                if e.get("horizontal_line"):
+                    has_hlines = True
                 if pl:
                     has_pt_labels = True
-                    if e["budget_mean"] > 2500:
+                    if (not has_hlines
+                            and e["budget_mean"] > 2500):
                         continue
                 bx.append(e["budget_mean"])
                 by.append(e["error_mean"])
                 bs.append(e.get("error_std", 0))
                 pt_labels.append(pl)
-        if bx:
+
+        # Horizontal lines mode: dashed lines spanning
+        # the full plot width, labeled on the right edge.
+        if has_hlines and by:
+            n = len(by)
+            alphas = np.linspace(0.35, 0.75, max(n, 1))
+            for i, (yv, pl) in enumerate(
+                zip(by, pt_labels),
+            ):
+                lbl = (
+                    f"{label} (K={pl})" if i == 0
+                    else f"  K={pl}"
+                )
+                ax.axhline(
+                    yv, color=color_hybrid,
+                    ls="--", lw=1.5,
+                    alpha=float(alphas[i]),
+                    zorder=4, label=lbl,
+                )
+                ax.annotate(
+                    f"K={pl}",
+                    xy=(0.98, yv),
+                    xycoords=(
+                        "axes fraction", "data",
+                    ),
+                    fontsize=8, color=color_hybrid,
+                    va="bottom", ha="right",
+                    fontweight="bold",
+                )
+        elif bx:
             leg_label = (
-                f"{label} (K/L)" if has_pt_labels
+                f"{label} (C/L)" if has_pt_labels
                 else label
             )
             if has_pt_labels:
@@ -639,7 +699,7 @@ def plot_algorithm_family(
                     bs if show_bands else None,
                     color=color_hybrid,
                     marker=marker, ls="-",
-                    lw=2.5, ms=7, alpha=0.9,
+                    lw=1.5, ms=5, alpha=0.9,
                     zorder=5, label=leg_label,
                 )
             for xv, yv, pl in zip(
@@ -650,7 +710,7 @@ def plot_algorithm_family(
                         pl, xy=(xv, yv),
                         fontsize=7,
                         fontweight="bold",
-                        color="black",
+                        color=color_hybrid,
                         xytext=(6, 6),
                         textcoords="offset points",
                         zorder=10,
@@ -715,7 +775,13 @@ def plot_evaluation(
         scale = "log" if log_scale else "linear"
         fig, ax = plt.subplots(1, 1, figsize=figsize)
 
-        plot_idealized_methods(ax, agg, budgets, plot_cfg)
+        algo_prefixes = {
+            fam["prefix"] for fam in algorithm_families
+        }
+        plot_idealized_methods(
+            ax, agg, budgets, plot_cfg,
+            skip_prefixes=algo_prefixes,
+        )
 
         for fam in algorithm_families:
             plot_algorithm_family(
@@ -763,7 +829,7 @@ def plot_evaluation(
             )
 
         ax.legend(
-            fontsize=8, loc="upper right", ncol=2,
+            fontsize=8, loc="upper right", ncol=1,
         )
 
         plt.tight_layout()
@@ -813,11 +879,17 @@ def plot_overview(
             squeeze=False,
         )
 
+        algo_prefixes = {
+            fam["prefix"] for fam in algorithm_families
+        }
         for i, task in enumerate(tasks):
             r, c = divmod(i, cols)
             ax = axes[r][c]
             agg = per_task_agg[task]
-            plot_idealized_methods(ax, agg, budgets, plot_cfg)
+            plot_idealized_methods(
+                ax, agg, budgets, plot_cfg,
+                skip_prefixes=algo_prefixes,
+            )
             for fam in algorithm_families:
                 plot_algorithm_family(
                     ax, agg,
@@ -984,11 +1056,14 @@ def plot_per_head_comparison(
             rows_n, cols,
             figsize=(
                 figsize[0],
-                figsize[1] * rows_n / 2,
+                min(figsize[1] * rows_n / 2, 50),
             ),
             squeeze=False,
         )
 
+        algo_prefixes = {
+            fam["prefix"] for fam in algorithm_families
+        }
         for i, idx in enumerate(sorted_idxs):
             r, c = divmod(i, cols)
             ax = axes[r][c]
@@ -997,6 +1072,7 @@ def plot_per_head_comparison(
 
             plot_idealized_methods(
                 ax, agg, budgets, plot_cfg,
+                skip_prefixes=algo_prefixes,
             )
             for fam in algorithm_families:
                 plot_algorithm_family(
