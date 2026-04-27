@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..algorithms import METHOD_REGISTRY
-from ..core import clear_kmeans_cache
+from ..core import clear_kmeans_cache, compute_special_indices
 from .data_loader import (
     load_examples, count_examples, discover_examples,
 )
@@ -53,6 +53,10 @@ from .plotting import (
     plot_group_cosine_cg_eg_scatter_table,
     plot_group_token_probability_table,
     setup_style,
+)
+from .pi_distribution_plot import (
+    PiDistributionAggregator,
+    plot_pi_distribution_per_head,
 )
 
 log = logging.getLogger("evaluation")
@@ -258,6 +262,17 @@ def replay_plots(results_dir: Path) -> None:
                 title=plot_title,
                 config_caption=config_caption,
             )
+        pi_stats_path = task_dir / "pi_distribution_per_head_stats.json"
+        if pi_stats_path.is_file():
+            with open(pi_stats_path) as f:
+                pi_stats = json.load(f)
+            plot_pi_distribution_per_head(
+                pi_stats,
+                task_dir,
+                plotting,
+                title=plot_title,
+                config_caption=config_caption,
+            )
 
         per_head_dir = task_dir / "per_head"
         if per_head_dir.is_dir():
@@ -387,6 +402,12 @@ class Evaluation:
         self.n_queries = exp["n_queries"]
         self.n_examples = exp.get("n_examples", 10)
         self.use_rope = exp.get("use_rope", True)
+        self.normalize_keys_to_median_norm = bool(
+            exp.get("normalize_keys_to_median_norm", False)
+        )
+        self.normalize_queries_to_median_norm = bool(
+            exp.get("normalize_queries_to_median_norm", False)
+        )
         self.budgets = exp["budget_sweep"]["absolute"]
         self.head_dim = self.config["model"]["head_dim"]
         self.n_sink = (
@@ -403,6 +424,9 @@ class Evaluation:
         )
         self.group_cosine_bins = int(
             exp.get("group_cosine_distribution_bins", 50)
+        )
+        self.center_candidate_keys_for_pi_plot = bool(
+            exp.get("center_candidate_keys_for_pi_plot", False)
         )
 
         self.head_mode = exp.get(
@@ -642,10 +666,12 @@ class Evaluation:
         # One id per evaluate_query call; used to dedupe hg table cells
         # when budget-sweep methods share the same (head, n_groups).
         eval_index = 0
+        per_head_pi_agg = {}
 
         for hi, (layer_idx, q_head, kv_head) in (
             enumerate(heads, 1)
         ):
+            per_head_pi_agg[hi - 1] = PiDistributionAggregator()
             log.info(
                 "  Head %d/%d: L%d H%d (kv=%d)",
                 hi, len(heads),
@@ -658,6 +684,12 @@ class Evaluation:
                 phase=phase,
                 max_examples=self.n_examples,
                 use_rope=self.use_rope,
+                normalize_keys_to_median_norm=(
+                    self.normalize_keys_to_median_norm
+                ),
+                normalize_queries_to_median_norm=(
+                    self.normalize_queries_to_median_norm
+                ),
             ))
             if not examples:
                 raise FileNotFoundError(
@@ -712,6 +744,50 @@ class Evaluation:
                 for qpos in qpos_list:
                     this_eval = eval_index
                     eval_index += 1
+                    q = Q[qpos].astype(np.float64, copy=False)
+                    n_causal = qpos + 1
+                    _, cand_idx = compute_special_indices(
+                        n_causal, self.n_sink, self.local_window,
+                    )
+                    if cand_idx is not None and len(cand_idx) > 0:
+                        k_causal = K[:qpos + 1].astype(
+                            np.float64, copy=False,
+                        )
+                        k_cand = k_causal[cand_idx]
+                        if self.center_candidate_keys_for_pi_plot:
+                            k_cand = k_cand - np.mean(
+                                k_cand, axis=0, keepdims=True,
+                            )
+                        logits = (k_cand @ q) / np.sqrt(self.head_dim)
+                        lg_max = float(np.max(logits))
+                        z_shift = float(
+                            np.sum(np.exp(logits - lg_max)),
+                        )
+                        if z_shift > 0.0:
+                            sqd = float(np.sqrt(self.head_dim))
+                            ref_levels = {
+                                "e^0/Z": float(np.exp(0.0 - lg_max) / z_shift),
+                                "e^1/Z": float(np.exp(1.0 - lg_max) / z_shift),
+                                "e^sqrt(d)/Z": float(
+                                    np.exp(sqd - lg_max) / z_shift
+                                ),
+                            }
+                        else:
+                            ref_levels = None
+                        p1_cand_idx = int(np.argmax(logits))
+                        p1_idx = int(cand_idx[p1_cand_idx])
+                        rel_pos_wrt_q = int(p1_idx - qpos)
+                        q_norm = float(np.linalg.norm(q))
+                        k_norm_values = np.linalg.norm(
+                            k_cand, axis=1,
+                        )
+                        per_head_pi_agg[hi - 1].add_logits(
+                            logits,
+                            rel_pos_wrt_q=rel_pos_wrt_q,
+                            ref_levels=ref_levels,
+                            q_norm=q_norm,
+                            k_norm_values=k_norm_values,
+                        )
                     qr = evaluate_query(
                         Q[qpos], K[:qpos + 1],
                         V[:qpos + 1], methods,
@@ -1113,6 +1189,33 @@ class Evaluation:
                     title=f"{task} — {seq_desc}",
                     config_caption=config_caption,
                 )
+        per_head_pi_stats = {}
+        for idx, agg_obj in per_head_pi_agg.items():
+            l, h, k = heads[idx]
+            hm = head_meta[idx] if head_meta else {}
+            stats = agg_obj.finalize()
+            if int(stats.get("n_queries", 0)) <= 0:
+                continue
+            per_head_pi_stats[str(idx)] = {
+                "layer": int(l),
+                "q_head": int(h),
+                "kv_head": int(k),
+                "selection_label": hm.get("selection_label", ""),
+                "effective_entropy": hm.get("effective_entropy"),
+                "stats": stats,
+            }
+        if per_head_pi_stats:
+            self._save_json(
+                f"per_task/{task}/pi_distribution_per_head_stats.json",
+                per_head_pi_stats,
+            )
+            plot_pi_distribution_per_head(
+                per_head_pi_stats,
+                task_dir,
+                self.config.get("plotting", {}),
+                title=f"{task} — {seq_desc}",
+                config_caption=config_caption,
+            )
 
         self._save_json(
             f"per_task/{task}/aggregated_stats.json",

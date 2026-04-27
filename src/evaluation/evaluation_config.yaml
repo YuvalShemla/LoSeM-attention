@@ -72,6 +72,11 @@ evaluation:
   n_queries: 1         # query positions per example (last N tokens)
   n_examples: 1         # examples per task (strict)
   use_rope: true        # false to use pre-RoPE (raw) Q and K
+  # Optional norm equalization right after loading vectors.
+  # If enabled, each row vector is rescaled to the median non-zero row
+  # norm of that sequence (done separately for Q and K).
+  normalize_keys_to_median_norm: false
+  normalize_queries_to_median_norm: false
 
   # Compute per-query attention statistics (entropy,
   # top-100 mass) alongside error metrics. Nearly free
@@ -84,6 +89,9 @@ evaluation:
   # grouped members, then saves/plots per-task summaries.
   compute_group_cosine_distribution: true
   group_cosine_distribution_bins: 50
+  # If true, center candidate keys (after excluding sink/local window)
+  # by subtracting their mean vector before p_i diagnostics.
+  center_candidate_keys_for_pi_plot: true
 
   head_mode: "selected_heads"
 #  head_mode: "custom"
@@ -147,9 +155,9 @@ plotting:
   figsize: [16, 10]
   dpi: 200
   # Ordering for group_token_probability_table:
+  # - key_logit (default): all keys globally by decreasing e^{l_i}/Z (blue curve continuous, on top)
   # - group_then_key: groups by decreasing e^{l_g}, then keys in-group by e^{l_i}/Z
-  # - key_logit: all keys globally by decreasing e^{l_i}/Z
-  group_token_probability_order: "group_then_key"
+  group_token_probability_order: "key_logit"
   log_scale: true
   linear_scale: true
   idealized_linestyle: "--"

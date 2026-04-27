@@ -11,6 +11,26 @@ from pathlib import Path
 from typing import Dict, List, Optional, Iterator
 
 
+def _normalize_row_norms_to_median(x: np.ndarray) -> np.ndarray:
+    """
+    Rescale each row vector to the median non-zero row norm.
+
+    Rows with (near-)zero norm are left unchanged to avoid introducing
+    arbitrary directions.
+    """
+    arr = np.asarray(x, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] == 0:
+        return arr
+    norms = np.linalg.norm(arr, axis=1)
+    nz = norms > 1e-12
+    if not np.any(nz):
+        return arr
+    target = float(np.median(norms[nz]))
+    out = arr.copy()
+    out[nz] *= (target / norms[nz])[:, None]
+    return out
+
+
 def load_pt_example(
     example_dir: Path,
     layer: int,
@@ -126,6 +146,8 @@ def load_examples(
     phase: Optional[str] = None,
     max_examples: Optional[int] = None,
     use_rope: bool = True,
+    normalize_keys_to_median_norm: bool = False,
+    normalize_queries_to_median_norm: bool = False,
 ) -> Iterator[Dict]:
     """
     Iterate examples for a task/layer/head combo.
@@ -156,12 +178,19 @@ def load_examples(
             "example_id", ex_dir.name,
         )
 
+        q = data["Q"]
+        k = data["K"]
+        if normalize_queries_to_median_norm:
+            q = _normalize_row_norms_to_median(q)
+        if normalize_keys_to_median_norm:
+            k = _normalize_row_norms_to_median(k)
+
         yield {
-            "Q": data["Q"],
-            "K": data["K"],
+            "Q": q,
+            "K": k,
             "V": data["V"],
             "example_id": ex_id,
-            "sequence_length": data["Q"].shape[0],
+            "sequence_length": q.shape[0],
             "task": task,
             "layer": layer,
             "head": head,

@@ -326,9 +326,14 @@ def format_eval_config_caption(config: Optional[Dict] = None) -> str:
     else:
         hm_s = hm[:16] if hm else "?"
     seed = ev.get("seed", "?")
+    nk = bool(ev.get("normalize_keys_to_median_norm", False))
+    nq_norm = bool(ev.get("normalize_queries_to_median_norm", False))
+    nk_s = "on" if nk else "off"
+    nq_s = "on" if nq_norm else "off"
     return (
         f"local={local_size} · sink={sink} · n_q={nq} · "
-        f"ex={ne} · heads={hm_s} · seed={seed}"
+        f"ex={ne} · heads={hm_s} · seed={seed} · "
+        f"normK={nk_s} · normQ={nq_s}"
     )
 
 
@@ -1773,28 +1778,77 @@ def _plot_group_token_probability_profile(
     boundaries = np.asarray(
         prof.get("group_boundaries", []), dtype=np.int32,
     )
-    if (
-        key_probs.size == 0
-        or key_probs.shape != group_probs.shape
-    ):
+    if key_probs.size == 0 or key_probs.shape != group_probs.shape:
         return False
     key_probs_orig = key_probs.copy()
     group_probs_orig = group_probs.copy()
     boundaries_orig = boundaries.copy()
     if group_probs_over_z.shape != key_probs.shape:
         group_probs_over_z = np.array([], dtype=np.float64)
+    # Main group probability for this plot: normalize by Z so it is
+    # directly comparable to p_i = exp(l_i)/Z.
+    if group_probs_over_z.size > 0:
+        group_probs_main = group_probs_over_z.copy()
+    else:
+        group_probs_main = group_probs.copy()
     if order_mode == "key_logit":
         ord_idx = np.argsort(-key_probs)
         key_probs = key_probs[ord_idx]
         group_probs = group_probs[ord_idx]
+        group_probs_main = group_probs_main[ord_idx]
         if group_probs_over_z.size > 0:
             group_probs_over_z = group_probs_over_z[ord_idx]
         boundaries = np.array([], dtype=np.int32)
+    cum_cg_x = np.array([], dtype=np.float64)
+    cum_cg_y = np.array([], dtype=np.float64)
+    if boundaries.size > 0 and int(boundaries[-1]) == int(key_probs.size):
+        starts = np.concatenate(
+            [np.array([0], dtype=np.int32), boundaries[:-1]],
+        )
+        cg_vals: List[float] = []
+        x_vals: List[float] = []
+        for s, e in zip(starts, boundaries):
+            si = int(s)
+            ei = int(e)
+            if ei <= si:
+                continue
+            cg_vals.append(
+                float(np.sum(np.abs(key_probs[si:ei] - group_probs_main[si:ei]))),
+            )
+            x_vals.append(float(ei))
+        if cg_vals:
+            cg_arr = np.asarray(cg_vals, dtype=np.float64)
+            cg_total = float(np.sum(cg_arr))
+            if cg_total > 0.0:
+                cum_cg_y = np.cumsum(cg_arr) / cg_total
+            else:
+                cum_cg_y = np.zeros_like(cg_arr)
+            cum_cg_x = np.asarray(x_vals, dtype=np.float64)
+    elif key_probs.size > 0:
+        tok_diff = np.abs(key_probs - group_probs_main)
+        tok_total = float(np.sum(tok_diff))
+        if tok_total > 0.0:
+            cum_cg_y = np.cumsum(tok_diff) / tok_total
+        else:
+            cum_cg_y = np.zeros_like(tok_diff)
+        cum_cg_x = np.arange(
+            1, key_probs.size + 1, dtype=np.float64,
+        )
     x = np.arange(1, key_probs.size + 1, dtype=np.int32)
-    above = key_probs >= group_probs
+    # Continuous curve (the one that reads as a single trace) should
+    # draw on top: key-sorted → blue; group-sorted → orange.
+    if order_mode == "key_logit":
+        z_key_line = 5.2
+        z_group_line = 3.8
+        z_zprime_line = 3.2
+    else:
+        z_key_line = 3.8
+        z_group_line = 5.2
+        z_zprime_line = 4.6
+    above = key_probs >= group_probs_main
     below = ~above
     ax.fill_between(
-        x, key_probs, group_probs,
+        x, key_probs, group_probs_main,
         where=above,
         color="#d62728",
         alpha=0.22,
@@ -1802,7 +1856,7 @@ def _plot_group_token_probability_profile(
         zorder=1,
     )
     ax.fill_between(
-        x, key_probs, group_probs,
+        x, key_probs, group_probs_main,
         where=below,
         color="#2ca02c",
         alpha=0.22,
@@ -1816,7 +1870,7 @@ def _plot_group_token_probability_profile(
             color="C0",
             lw=0.5,
             alpha=0.9,
-            zorder=3,
+            zorder=z_key_line,
             label=r"$e^{\ell_i}/Z$",
         )
     else:
@@ -1835,43 +1889,65 @@ def _plot_group_token_probability_profile(
                 color="C0",
                 lw=0.5,
                 alpha=0.9,
-                zorder=3,
+                zorder=z_key_line,
                 label=r"$e^{\ell_i}/Z$" if si == 0 else None,
             )
     ax.plot(
         x,
-        group_probs,
+        group_probs_main,
         color="#ff7f0e",
         lw=1.25,
         alpha=0.95,
-        zorder=4.2,
-        label=r"$e^{\ell_g}/Z'$",
+        zorder=z_group_line,
+        label=r"$e^{\ell_g}/Z$",
     )
     if group_probs_over_z.size > 0:
         ax.plot(
             x,
-            group_probs_over_z,
+            group_probs,
             color="#ff7f0e",
             lw=1.05,
             alpha=0.9,
             linestyle=":",
-            zorder=4.3,
+            zorder=z_zprime_line,
         )
+    if cum_cg_x.size > 0 and cum_cg_y.size > 0:
+        ax_cg = ax.twinx()
+        ax_cg.plot(
+            cum_cg_x,
+            cum_cg_y,
+            color="black",
+            lw=1.1,
+            linestyle="-.",
+            alpha=0.9,
+            zorder=max(z_key_line, z_group_line) + 0.5,
+            label=r"cum $|p_i-\tilde p_i|$ (norm.)",
+        )
+        ax_cg.set_ylim(0.0, 1.02)
+        ax_cg.set_yticks([0.0, 0.5, 1.0])
+        ax_cg.tick_params(axis="y", labelsize=6, colors="black")
+        ax_cg.set_ylabel(r"cum $|p_i-\tilde p_i|$", fontsize=7, color="black")
     p50_key = float(np.quantile(key_probs_orig, 0.50))
     if boundaries_orig.size > 0:
         g_starts = np.concatenate(
             [np.array([0], dtype=np.int32), boundaries_orig[:-1]],
         )
-        g_vals = group_probs_orig[g_starts]
+        if group_probs_over_z.size > 0:
+            g_vals = group_probs_over_z[g_starts]
+        else:
+            g_vals = group_probs_orig[g_starts]
     else:
-        g_vals = group_probs_orig
+        if group_probs_over_z.size > 0:
+            g_vals = group_probs_over_z
+        else:
+            g_vals = group_probs_orig
     p50_group = float(np.quantile(g_vals, 0.50))
     ax.text(
         0.02,
         0.98,
         "P50 $e^{\\ell_i}$="
         f"{_format_exp_l1_over_z(p50_key)}\n"
-        "P50 $e^{\\ell_g}$="
+        "P50 $e^{\\ell_g}/Z$="
         f"{_format_exp_l1_over_z(p50_group)}",
         transform=ax.transAxes,
         fontsize=6,
@@ -1898,8 +1974,11 @@ def plot_group_token_probability_table(
 ):
     """
     Table layout: rows are algorithms, columns are (head, #groups).
-    Each cell plots keys ordered by decreasing group e^{ell_g}, and within
-    each group by decreasing e^{ell_i}/Z.
+
+    Sorting is controlled by ``plot_cfg["group_token_probability_order"]``:
+    ``key_logit`` (default) sorts all keys by decreasing p_i; ``group_then_key``
+    sorts by group then key within each group. The continuous curve is drawn on
+    top in each mode (blue in key order, orange in group order).
     """
     rows = table_stats.get("row_algorithms", [])
     columns = _order_group_cosine_table_columns(
@@ -1910,10 +1989,10 @@ def plot_group_token_probability_table(
         return
     setup_style()
     order_mode = str(
-        plot_cfg.get("group_token_probability_order", "group_then_key"),
+        plot_cfg.get("group_token_probability_order", "key_logit"),
     ).strip().lower()
     if order_mode not in {"group_then_key", "key_logit"}:
-        order_mode = "group_then_key"
+        order_mode = "key_logit"
     n_rows = len(rows)
     n_cols = len(columns)
     base_dpi = int(plot_cfg.get("dpi", 200))
@@ -1929,9 +2008,10 @@ def plot_group_token_probability_table(
     )
     legend_handles = [
         Line2D([0], [0], color="C0", lw=1.0, label=r"$e^{\ell_i}/Z$"),
-        Line2D([0], [0], color="#ff7f0e", lw=1.25, label=r"$e^{\ell_g}/Z'$"),
-        Patch(facecolor="#d62728", alpha=0.22, label=r"$e^{\ell_i}/Z \geq e^{\ell_g}/Z'$"),
-        Patch(facecolor="#2ca02c", alpha=0.22, label=r"$e^{\ell_i}/Z < e^{\ell_g}/Z'$"),
+        Line2D([0], [0], color="#ff7f0e", lw=1.25, label=r"$e^{\ell_g}/Z$"),
+        Line2D([0], [0], color="black", lw=1.1, linestyle="-.", label=r"cum $|p_i-\tilde p_i|$ (norm.)"),
+        Patch(facecolor="#d62728", alpha=0.22, label=r"$e^{\ell_i}/Z \geq e^{\ell_g}/Z$"),
+        Patch(facecolor="#2ca02c", alpha=0.22, label=r"$e^{\ell_i}/Z < e^{\ell_g}/Z$"),
     ]
     col_ylims: Dict[int, tuple] = {}
     for c, col in enumerate(columns):
@@ -2002,7 +2082,7 @@ def plot_group_token_probability_table(
     fig.legend(
         handles=legend_handles,
         loc="upper center",
-        ncol=4,
+        ncol=5,
         fontsize=8,
         framealpha=0.92,
         bbox_to_anchor=(0.5, 0.985),

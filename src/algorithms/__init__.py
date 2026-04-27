@@ -49,7 +49,7 @@ METHOD_REGISTRY = {
         KMeansClustering, "algorithm",
     ),
     "lsh_crosspoly": MethodSpec(
-        LSHCPGroup, "algorithm",
+        LSHCrossPolytope, "algorithm",
     ),
     "lsh_cp_group": MethodSpec(
         LSHCPGroup, "algorithm",
