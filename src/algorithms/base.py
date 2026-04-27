@@ -8,7 +8,7 @@ must implement.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Dict, Optional, List
 
 import numpy as np
 
@@ -95,6 +95,22 @@ class AttentionAlgorithm(ABC):
     def sweeps_budget(self) -> bool:
         """True if runner should sweep budget values."""
         return False
+
+    @property
+    def point_label(self) -> str:
+        """Per-instance label shown next to dot in plots."""
+        return ""
+
+    def cluster_quality(self) -> Optional[Dict[str, float]]:
+        """
+        Grouping quality metrics computed during prepare().
+
+        Returns dict with 'avg_cosine_sim' (weighted avg
+        cosine similarity of keys to their group mean) and
+        'n_groups' (number of non-empty groups), or None
+        if not applicable.
+        """
+        return None
 
     @staticmethod
     def expand_from_config(cfg: dict) -> list:
