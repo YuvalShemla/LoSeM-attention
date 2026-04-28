@@ -93,172 +93,213 @@ print(f"Test queries: {N_TEST}")
 # %% [markdown]
 # ## Core: Randomized SVD for Co-Attention Embeddings
 #
-# Computes the top-k right singular vectors of the (implicit) attention
-# or logit matrix **without materializing it**. Two passes through the
-# queries, each accumulating O(N × rank) products.
-#
-# Mathematically equivalent to eigendecomposing W = M^T M where M is
-# the attention/logit matrix. With oversampling=50, the approximation
-# is exact to machine precision.
-#
-# Sink token excluded. Optional local window removal.
+# Computes the top-k right singular vectors of the implicit M matrix
+# (attention or logit) with:
+# - **Power iterations** for accuracy on slowly-decaying spectra
+# - **Frobenius norm estimation** to measure energy captured vs lost
+# - Sink token excluded, optional local window removal
 
 # %%
 # Core: Randomized SVD for co-attention embeddings
+
+def _apply_M(Q_train_t, K_all_t, X, mode, causal, local_window, batch_size,
+             compute_dcol=False, compute_frob=False):
+    """Compute Y = M_cand @ X without materializing M. Optionally D_col and ||M||_F^2."""
+    N_q, N_k = Q_train_t.shape[0], K_all_t.shape[0]
+    N_cand = N_k - 1
+    s_d = K_all_t.shape[1] ** 0.5
+    k = X.shape[1]
+
+    Y = torch.zeros(N_q, k, device=K_all_t.device, dtype=torch.float32)
+    D_col = torch.zeros(N_cand, device=K_all_t.device, dtype=torch.float32) if compute_dcol else None
+    frob_sq = 0.0
+
+    for start in range(0, N_q, batch_size):
+        end = min(start + batch_size, N_q)
+        q_batch = Q_train_t[start:end]
+
+        if causal:
+            K_used = K_all_t[:end]
+            scores = q_batch @ K_used.T / s_d
+            q_pos = torch.arange(start, end, device=scores.device).unsqueeze(1)
+            k_pos = torch.arange(end, device=scores.device).unsqueeze(0)
+            cmask = k_pos <= q_pos
+            if mode == "attention":
+                scores = scores.masked_fill(~cmask, float("-inf"))
+                Mc = torch.softmax(scores, dim=-1)[:, 1:].float()
+            else:
+                Mc = (scores * cmask.float())[:, 1:].float()
+            if local_window > 0:
+                ckp = torch.arange(1, end, device=scores.device).unsqueeze(0)
+                dist = q_pos - ckp
+                lm = (dist >= 0) & (dist < local_window)
+                Mc = Mc.masked_fill(lm, 0.0)
+            nb = end - 1
+            Y[start:end] = Mc @ X[:nb]
+            if compute_dcol:
+                D_col[:nb] += Mc.sum(dim=0)
+            if compute_frob:
+                frob_sq += (Mc ** 2).sum().item()
+        else:
+            scores = q_batch @ K_all_t.T / s_d
+            if mode == "attention":
+                Mc = torch.softmax(scores, dim=-1)[:, 1:].float()
+            else:
+                Mc = scores[:, 1:].float()
+            if local_window > 0:
+                q_pos = torch.arange(start, end, device=scores.device).unsqueeze(1)
+                ckp = torch.arange(1, N_k, device=scores.device).unsqueeze(0)
+                dist = (q_pos - ckp).abs()
+                lm = dist < local_window
+                Mc = Mc.masked_fill(lm, 0.0)
+            Y[start:end] = Mc @ X
+            if compute_dcol:
+                D_col += Mc.sum(dim=0)
+            if compute_frob:
+                frob_sq += (Mc ** 2).sum().item()
+
+    return Y, D_col, frob_sq
+
+
+def _apply_Mt(Q_train_t, K_all_t, Y, mode, causal, local_window, batch_size):
+    """Compute Z = M_cand^T @ Y without materializing M."""
+    N_q, N_k = Q_train_t.shape[0], K_all_t.shape[0]
+    N_cand = N_k - 1
+    s_d = K_all_t.shape[1] ** 0.5
+    k = Y.shape[1]
+
+    Z = torch.zeros(N_cand, k, device=K_all_t.device, dtype=torch.float32)
+
+    for start in range(0, N_q, batch_size):
+        end = min(start + batch_size, N_q)
+        q_batch = Q_train_t[start:end]
+
+        if causal:
+            K_used = K_all_t[:end]
+            scores = q_batch @ K_used.T / s_d
+            q_pos = torch.arange(start, end, device=scores.device).unsqueeze(1)
+            k_pos = torch.arange(end, device=scores.device).unsqueeze(0)
+            cmask = k_pos <= q_pos
+            if mode == "attention":
+                scores = scores.masked_fill(~cmask, float("-inf"))
+                Mc = torch.softmax(scores, dim=-1)[:, 1:].float()
+            else:
+                Mc = (scores * cmask.float())[:, 1:].float()
+            if local_window > 0:
+                ckp = torch.arange(1, end, device=scores.device).unsqueeze(0)
+                dist = q_pos - ckp
+                lm = (dist >= 0) & (dist < local_window)
+                Mc = Mc.masked_fill(lm, 0.0)
+            nb = end - 1
+            Z[:nb] += Mc.T @ Y[start:end]
+        else:
+            scores = q_batch @ K_all_t.T / s_d
+            if mode == "attention":
+                Mc = torch.softmax(scores, dim=-1)[:, 1:].float()
+            else:
+                Mc = scores[:, 1:].float()
+            if local_window > 0:
+                q_pos = torch.arange(start, end, device=scores.device).unsqueeze(1)
+                ckp = torch.arange(1, N_k, device=scores.device).unsqueeze(0)
+                dist = (q_pos - ckp).abs()
+                lm = dist < local_window
+                Mc = Mc.masked_fill(lm, 0.0)
+            Z += Mc.T @ Y[start:end]
+
+    return Z
+
+
 def coattention_embeddings(
     Q_train_t, K_all_t, mode="attention", causal=True,
-    local_window=0, rank=512, oversample=50, batch_size=512,
-    verbose=True,
+    local_window=0, rank=512, oversample=128, n_power_iter=2,
+    batch_size=512, verbose=True,
 ):
     """
-    Compute key embeddings from co-attention via randomized SVD.
+    Compute key embeddings from co-attention via randomized SVD
+    with power iterations for accuracy.
 
-    Sink (position 0) is excluded. Softmax (in attention mode) is
-    computed over all keys for correct normalization, then sink and
-    optionally local window columns are zeroed before accumulating.
+    Power iterations: Y = (M M^T)^p M @ Omega. Each iteration
+    adds 2 passes through the data. With p=2, total = 7 passes
+    (~10s per config on A100 for 80K sequences).
 
-    Args:
-        mode: "attention" (with softmax) or "logit" (raw scores)
-        causal: mask future keys
-        local_window: exclude keys within this distance of the query
-        rank: number of embedding dimensions
-        oversample: extra dimensions for numerical stability
+    Also computes ||M||_F^2 to measure energy captured.
 
     Returns:
-        V_emb: [N_cand, rank] key embeddings (N_cand = N_keys - 1)
+        V_emb: [N_cand, rank] right singular vectors (unweighted)
         S: [rank] singular values
-        D_col: [N_cand] column sums (total signal per key)
+        D_col: [N_cand] column sums
+        frob_sq: float, ||M||_F^2 (total energy)
     """
     N_q = Q_train_t.shape[0]
     N_k = K_all_t.shape[0]
     N_cand = N_k - 1
-    s_d = K_all_t.shape[1] ** 0.5
     k = rank + oversample
 
-    lw_str = f", local_window={local_window}" if local_window > 0 else ""
+    lw_str = f", lw={local_window}" if local_window > 0 else ""
     if verbose:
         print(f"  Randomized SVD ({mode}, {'causal' if causal else 'bidir'}{lw_str})")
-        print(f"  N_q={N_q:,}, N_cand={N_cand:,}, rank={rank}")
-
-    omega = torch.randn(N_cand, k, device=K_all_t.device, dtype=K_all_t.dtype)
-    Y = torch.zeros(N_q, k, device=K_all_t.device, dtype=K_all_t.dtype)
-    D_col = torch.zeros(N_cand, device=K_all_t.device, dtype=torch.float32)
+        print(f"  N_q={N_q:,}, N_cand={N_cand:,}, rank={rank}, "
+              f"oversample={oversample}, power_iter={n_power_iter}")
 
     t0 = time.time()
-    n_batches = (N_q + batch_size - 1) // batch_size
+    args = (Q_train_t, K_all_t)
+    kwargs = dict(mode=mode, causal=causal, local_window=local_window,
+                  batch_size=batch_size)
 
-    # --- Pass 1: Y = M_cand @ omega ---
-    for bi, start in enumerate(range(0, N_q, batch_size)):
-        end = min(start + batch_size, N_q)
-        q_batch = Q_train_t[start:end]
-
-        if causal:
-            K_used = K_all_t[:end]
-            scores = q_batch @ K_used.T / s_d
-            q_pos = torch.arange(start, end, device=scores.device).unsqueeze(1)
-            k_pos = torch.arange(end, device=scores.device).unsqueeze(0)
-            causal_mask = k_pos <= q_pos
-            if mode == "attention":
-                scores = scores.masked_fill(~causal_mask, float("-inf"))
-                M_batch = torch.softmax(scores, dim=-1)
-            else:
-                M_batch = scores * causal_mask.float()
-            M_cand = M_batch[:, 1:].float()
-            if local_window > 0:
-                cand_key_pos = torch.arange(1, end, device=scores.device).unsqueeze(0)
-                dist = q_pos - cand_key_pos
-                local_mask = (dist >= 0) & (dist < local_window)
-                M_cand = M_cand.masked_fill(local_mask, 0.0)
-            n_cb = end - 1
-            Y[start:end] = M_cand @ omega[:n_cb]
-            D_col[:n_cb] += M_cand.sum(dim=0)
-        else:
-            scores = q_batch @ K_all_t.T / s_d
-            if mode == "attention":
-                M_batch = torch.softmax(scores, dim=-1)
-            else:
-                M_batch = scores
-            M_cand = M_batch[:, 1:].float()
-            if local_window > 0:
-                q_pos = torch.arange(start, end, device=scores.device).unsqueeze(1)
-                cand_key_pos = torch.arange(1, N_k, device=scores.device).unsqueeze(0)
-                dist = (q_pos - cand_key_pos).abs()
-                local_mask = dist < local_window
-                M_cand = M_cand.masked_fill(local_mask, 0.0)
-            Y[start:end] = M_cand @ omega
-            D_col += M_cand.sum(dim=0)
-
-        if verbose and (bi + 1) % max(1, n_batches // 5) == 0:
-            elapsed = time.time() - t0
-            print(f"    Pass 1: batch {bi+1}/{n_batches} ({elapsed:.0f}s)")
-
+    # Pass 1: Y = M @ Omega (also compute D_col and ||M||_F^2)
+    omega = torch.randn(N_cand, k, device=K_all_t.device, dtype=torch.float32)
+    Y, D_col, frob_sq = _apply_M(*args, omega, **kwargs,
+                                  compute_dcol=True, compute_frob=True)
+    del omega
     if verbose:
-        print(f"  Pass 1 done in {time.time() - t0:.1f}s")
+        print(f"  Pass 1 done ({time.time()-t0:.1f}s), ||M||_F^2 = {frob_sq:.2e}")
+
+    # Power iterations: Y = M @ (M^T @ Y), with QR for stability
+    for p in range(n_power_iter):
+        tp = time.time()
+        Y, _ = torch.linalg.qr(Y)
+        Z = _apply_Mt(*args, Y, **kwargs)
+        Z, _ = torch.linalg.qr(Z)
+        Y, _, _ = _apply_M(*args, Z, **kwargs)
+        del Z
+        if verbose:
+            print(f"  Power iter {p+1}/{n_power_iter} ({time.time()-tp:.1f}s)")
 
     # QR
     Q_basis, _ = torch.linalg.qr(Y)
-    del Y, omega
+    del Y
 
-    # --- Pass 2: B = Q_basis^T @ M_cand ---
-    B = torch.zeros(k, N_cand, device=K_all_t.device, dtype=torch.float32)
-    t1 = time.time()
-
-    for bi, start in enumerate(range(0, N_q, batch_size)):
-        end = min(start + batch_size, N_q)
-        q_batch = Q_train_t[start:end]
-
-        if causal:
-            K_used = K_all_t[:end]
-            scores = q_batch @ K_used.T / s_d
-            q_pos = torch.arange(start, end, device=scores.device).unsqueeze(1)
-            k_pos = torch.arange(end, device=scores.device).unsqueeze(0)
-            causal_mask = k_pos <= q_pos
-            if mode == "attention":
-                scores = scores.masked_fill(~causal_mask, float("-inf"))
-                M_batch = torch.softmax(scores, dim=-1)
-            else:
-                M_batch = scores * causal_mask.float()
-            M_cand = M_batch[:, 1:].float()
-            if local_window > 0:
-                cand_key_pos = torch.arange(1, end, device=scores.device).unsqueeze(0)
-                dist = q_pos - cand_key_pos
-                local_mask = (dist >= 0) & (dist < local_window)
-                M_cand = M_cand.masked_fill(local_mask, 0.0)
-            n_cb = end - 1
-            B[:, :n_cb] += Q_basis[start:end].T @ M_cand
-        else:
-            scores = q_batch @ K_all_t.T / s_d
-            if mode == "attention":
-                M_batch = torch.softmax(scores, dim=-1)
-            else:
-                M_batch = scores
-            M_cand = M_batch[:, 1:].float()
-            if local_window > 0:
-                q_pos = torch.arange(start, end, device=scores.device).unsqueeze(1)
-                cand_key_pos = torch.arange(1, N_k, device=scores.device).unsqueeze(0)
-                dist = (q_pos - cand_key_pos).abs()
-                local_mask = dist < local_window
-                M_cand = M_cand.masked_fill(local_mask, 0.0)
-            B += Q_basis[start:end].T @ M_cand
-
-        if verbose and (bi + 1) % max(1, n_batches // 5) == 0:
-            elapsed = time.time() - t1
-            print(f"    Pass 2: batch {bi+1}/{n_batches} ({elapsed:.0f}s)")
+    # Final pass: B = Q_basis^T @ M
+    # Reuse _apply_Mt with Q_basis transposed... actually B = Q^T M
+    # which is M^T Q columns = _apply_Mt(Q_basis)
+    B_t = _apply_Mt(*args, Q_basis, **kwargs)  # [N_cand, k]
+    del Q_basis
+    B = B_t.T  # [k, N_cand]
+    del B_t
 
     if verbose:
-        print(f"  Pass 2 done in {time.time() - t1:.1f}s")
-
-    del Q_basis
+        print(f"  Projection done ({time.time()-t0:.1f}s total)")
 
     # SVD of B [k x N_cand]
     U_B, S, Vt = torch.linalg.svd(B, full_matrices=False)
-    V_emb = Vt[:rank].T  # [N_cand, rank]
+    V_emb = Vt[:rank].T  # [N_cand, rank] — unweighted
 
+    # Energy analysis
+    energy_captured = float((S[:rank] ** 2).sum().item())
+    energy_svd_total = float((S ** 2).sum().item())
     if verbose:
+        pct_of_svd = energy_captured / max(energy_svd_total, 1e-30) * 100
+        pct_of_frob = energy_captured / max(frob_sq, 1e-30) * 100
         print(f"  Top-5 singular values: {S[:5].cpu().numpy()}")
+        print(f"  Energy: rank-{rank} captures {pct_of_svd:.2f}% of SVD energy, "
+              f"{pct_of_frob:.2f}% of total ||M||_F^2")
+        if pct_of_frob < 95:
+            print(f"  WARNING: only {pct_of_frob:.1f}% of total energy captured. "
+                  f"Consider increasing rank.")
         print(f"  Total time: {time.time() - t0:.1f}s")
 
-    return V_emb.cpu().numpy(), S[:rank].cpu().numpy(), D_col.cpu().numpy()
+    return (V_emb.cpu().numpy(), S[:rank].cpu().numpy(),
+            D_col.cpu().numpy(), frob_sq)
 
 
 # %%
@@ -453,7 +494,8 @@ configs = [
 ]
 
 N_CLUSTERS = 512
-RANK = 512
+RANK = 2048  # high rank — energy check will tell us if it's enough
+N_POWER_ITER = 2  # power iterations for accuracy
 N_CAND = N - 1
 N_CAND_TRAIN = N_TRAIN - 1
 K_cand_train = K_np[1:N_TRAIN]
@@ -468,16 +510,12 @@ all_embeddings = {}
 
 for mode, causal, lw, label in configs:
     print(f"\n--- {label} ---")
-    V_emb, S, D = coattention_embeddings(
+    V_emb, S, D, frob_sq = coattention_embeddings(
         Q_train_t, K_all_t, mode=mode, causal=causal,
-        local_window=lw, rank=RANK, batch_size=BS,
+        local_window=lw, rank=RANK, oversample=128,
+        n_power_iter=N_POWER_ITER, batch_size=BS,
     )
-    # Singular value spectrum
-    cumvar = np.cumsum(S ** 2) / max(np.sum(S ** 2), 1e-30)
-    for r in [16, 64, 256, 512]:
-        if r <= len(cumvar):
-            print(f"  Rank {r:4d}: {cumvar[r-1]*100:.1f}% variance")
-    all_embeddings[label] = (V_emb, S, D)
+    all_embeddings[label] = (V_emb, S, D, frob_sq)
 
 del Q_train_t, K_all_t
 if device.type == "cuda":
@@ -601,15 +639,14 @@ for mq_label, Q_sub in [
 # %%
 # Co-attention SVD clusterings
 print("\n--- Co-Attention SVD Embeddings ---")
-for label, (V_emb, S, D) in all_embeddings.items():
+for label, (V_emb, S, D, frob_sq) in all_embeddings.items():
     V_train = V_emb[:N_CAND_TRAIN]
     V_test = V_emb[N_CAND_TRAIN:]
     D_train = D[:N_CAND_TRAIN]
 
-    # Weight eigenvectors by singular values (correct objective)
-    # Without weighting, all SVD directions get equal importance.
-    # With weighting, directions with large singular values (capturing
-    # more logit variance) get proportionally more influence in KMeans.
+    # Weight eigenvectors by singular values (correct objective).
+    # z_j = Σ * V_j gives the rank-r representation of column j.
+    # KMeans on z_j minimizes within-cluster profile distance.
     V_train_w = (V_train * S[None, :]).astype(np.float32)
     V_test_w = (V_test * S[None, :]).astype(np.float32)
 
