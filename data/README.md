@@ -50,13 +50,9 @@ Each `.pt` contains a dict of tensors for the selected heads at that layer:
 ## Loading
 
 ```python
-from src.evaluation.data_loader import load_examples
+from examples.kvcache.vector_data import iter_selected_heads
 
-for ex in load_examples(
-    Path("data/vectors"),
-    task="math_calc", layer=26,
-    head=12, kv_head=3,
-):
+for ex in iter_selected_heads("data/vectors", "math_calc"):
     Q, K, V = ex["Q"], ex["K"], ex["V"]
 ```
 

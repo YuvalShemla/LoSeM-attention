@@ -16,6 +16,14 @@ from .pq_topk import PQIndex, IVFPQIndex
 from ..core import softmax
 
 
+def _full_index_candidate_mask(index_len: int, candidate_idx: np.ndarray) -> np.ndarray:
+    """Mask over a full prepared index, allowing only current causal candidates."""
+    mask = np.zeros(index_len, dtype=bool)
+    valid = candidate_idx[candidate_idx < index_len]
+    mask[valid] = True
+    return mask
+
+
 class VAttentionPQ(AttentionAlgorithm):
     """
     vAttention with PQ-approximate top-k.
@@ -71,8 +79,9 @@ class VAttentionPQ(AttentionAlgorithm):
         b_sample = buse - b_topk
 
         # PQ approximate top-k
-        cand_mask = np.zeros(n, dtype=bool)
-        cand_mask[candidate_idx] = True
+        cand_mask = _full_index_candidate_mask(
+            len(self._pq.codes), candidate_idx,
+        )
 
         if b_topk > 0:
             topk_global = self._pq.approximate_topk(
@@ -150,7 +159,11 @@ class VAttentionPQ(AttentionAlgorithm):
     @staticmethod
     def expand_from_config(cfg: dict) -> list:
         m_list = cfg.get("m_sweep", [8])
-        return [VAttentionPQ(m=m) for m in m_list]
+        n_codes = int(cfg.get("n_codes", 256))
+        return [
+            VAttentionPQ(m=m, n_codes=n_codes)
+            for m in m_list
+        ]
 
 
 class IVFPQCluster(AttentionAlgorithm):
@@ -226,8 +239,9 @@ class IVFPQCluster(AttentionAlgorithm):
         buse = min(budget, n_cand)
 
         # Build candidate mask (exclude special)
-        cand_mask = np.zeros(n, dtype=bool)
-        cand_mask[candidate_idx] = True
+        cand_mask = _full_index_candidate_mask(
+            len(self._ivfpq.pq.codes), candidate_idx,
+        )
 
         # IVF-PQ search: probe nearest cells, PQ top-k
         topk_global, probed_set, unprobed_info = (
@@ -282,9 +296,146 @@ class IVFPQCluster(AttentionAlgorithm):
         nc = cfg.get("n_cells", 1024)
         nprobe_list = cfg.get("nprobe_sweep", [32])
         m = cfg.get("m", 8)
+        n_codes = int(cfg.get("n_codes", 256))
         return [
             IVFPQCluster(
-                n_cells=nc, nprobe=np, m=m,
+                n_cells=nc, nprobe=np, m=m, n_codes=n_codes,
             )
             for np in nprobe_list
+        ]
+
+
+class FullAttentionPQ(AttentionAlgorithm):
+    """
+    Budgeted full attention using symmetric PQ logits.
+
+    Special indices (sink/local) keep exact logits.
+    Candidate logits are estimated with quantized query +
+    quantized keys:
+
+      l_hat_j = sum_s <c_q[s], c_kj[s]> / sqrt(d)
+
+    where c_q[s] is the nearest codeword for query subspace s,
+    and c_kj[s] is key j's stored subspace codeword.
+
+    For budget B:
+      1) choose top-B candidates by estimated l_hat_j
+      2) replace those B scores with exact logits
+      3) keep PQ estimates for the remaining candidates
+      4) run one joint softmax over special + all candidates
+    """
+
+    def __init__(self, m: int = 8, n_codes: int = 256):
+        self.m = m
+        self.n_codes = n_codes
+        self._pq = None
+        self._sqrt_d = None
+
+    @property
+    def name(self) -> str:
+        return f"FullAttentionPQ_topk-m{self.m}"
+
+    @property
+    def sweeps_budget(self) -> bool:
+        return True
+
+    def prepare(self, keys, values, head_dim,
+                queries=None, query_positions=None,
+                seed=42):
+        self._pq = PQIndex(
+            m=self.m, n_codes=self.n_codes, seed=seed,
+        )
+        self._pq.fit(keys)
+        self._sqrt_d = float(np.sqrt(head_dim))
+
+    def run(self, problem: AttentionInput, budget: int,
+            rng: np.random.Generator) -> AttentionOutput:
+        logits = problem.logits
+        values = problem.values
+        special_idx = problem.special_idx
+        candidate_idx = problem.candidate_idx
+        n_total = len(problem.keys)
+        d = values.shape[1]
+
+        n_cand = len(candidate_idx)
+        if n_cand == 0:
+            out = softmax(logits[special_idx]) @ values[special_idx]
+            return AttentionOutput(
+                output=out,
+                actual_budget=len(special_idx),
+                selected_indices=special_idx,
+            )
+
+        # Asymmetric PQ logits: exact query subvector against
+        # quantized key codewords in each subspace.
+        query = problem.query.astype(np.float32, copy=False)
+        m = self._pq.m
+        dsub = self._pq.dsub
+        n_codes = self._pq.codebooks.shape[1]
+        lut = np.empty((m, n_codes), dtype=np.float32)
+        for i in range(m):
+            q_sub = query[i * dsub:(i + 1) * dsub]
+            lut[i] = self._pq.codebooks[i] @ q_sub
+
+        # Approximate logits for all keys, then keep candidates only.
+        approx_logits = np.zeros(n_total, dtype=np.float64)
+        key_codes = self._pq.codes[:n_total]
+        for i in range(m):
+            approx_logits += lut[i][key_codes[:, i]].astype(np.float64)
+        approx_logits /= self._sqrt_d
+
+        scores = np.empty(n_total, dtype=np.float64)
+        scores[special_idx] = logits[special_idx].astype(np.float64)
+        scores[candidate_idx] = approx_logits[candidate_idx]
+
+        # Top-B by PQ-estimated logits, then overwrite with exact logits.
+        b_exact = min(max(int(budget), 0), n_cand)
+        if b_exact > 0:
+            cand_approx = approx_logits[candidate_idx]
+            if b_exact < n_cand:
+                top_local = np.argpartition(
+                    cand_approx, -b_exact
+                )[-b_exact:]
+            else:
+                top_local = np.arange(n_cand)
+            top_global = candidate_idx[top_local]
+            scores[top_global] = logits[top_global].astype(np.float64)
+        else:
+            top_global = np.array([], dtype=np.int64)
+
+        p_true = softmax(logits.astype(np.float64)).astype(np.float64)
+        p_est = softmax(scores).astype(np.float64)
+        output = p_est.astype(np.float32) @ values.astype(np.float32)
+        lg_m = float(np.max(logits))
+        z_true = float(np.exp(lg_m) * np.sum(np.exp(logits - lg_m)))
+        sc_m = float(np.max(scores))
+        z_est = float(np.exp(sc_m) * np.sum(np.exp(scores - sc_m)))
+        # Compute exp(scores) / Z_true stably in log space.
+        log_z_true = lg_m + np.log(
+            max(np.sum(np.exp(logits - lg_m)), 1e-30)
+        )
+        p_est_true_z = np.exp(scores - log_z_true)
+        sel = np.concatenate([special_idx, top_global]).astype(np.int64)
+        return AttentionOutput(
+            output=output,
+            actual_budget=len(special_idx) + b_exact,
+            selected_indices=sel,
+            debug_payload={
+                "p_true": p_true.astype(np.float32),
+                "p_est_true_z": p_est_true_z.astype(np.float32),
+                "logits_true": logits.astype(np.float32),
+                "logits_est": scores.astype(np.float32),
+                "z_true": z_true,
+                "z_est": z_est,
+                "requested_budget": int(budget),
+            },
+        )
+
+    @staticmethod
+    def expand_from_config(cfg: dict) -> list:
+        m_list = cfg.get("m_sweep", [8])
+        n_codes = int(cfg.get("n_codes", 256))
+        return [
+            FullAttentionPQ(m=m, n_codes=n_codes)
+            for m in m_list
         ]

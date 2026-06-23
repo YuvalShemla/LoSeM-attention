@@ -7,6 +7,7 @@ must be explicitly requested.
 """
 
 from dataclasses import dataclass
+import warnings
 
 from .idealized_methods import (
     IdealTopK,
@@ -27,10 +28,8 @@ from .kmeans_value_clustering import (
     KMeansValueClustering,
     KMeansKeyClustering,
 )
-from .value_cluster_is import ValueClusterIS
 from .cp_value_cluster import CPValueCluster
 from .kcluster_topk import KClusterTopK, OracleClusterPQTopK
-from .tree_attention import TreeAttention
 from .qclust_topk import QClustTopK
 from .qclust_augmented import QClustAugTopK
 from .twostage_cluster import KeyClustValSub, QClustValSub
@@ -42,16 +41,53 @@ from .topk_cluster_comparison import (
 from .pq_methods import (
     VAttentionPQ,
     IVFPQCluster,
+    FullAttentionPQ,
 )
-from .value_cluster_methods import (
-    VClusterMeanKey,
-    VClusterSampled,
-    VClusterTopK,
-    KClusterSampled,
-    VClusterLastKey,
-    VClusterMeanLogit,
-    KMeansKK,
-)
+from .wildcat2 import WildCat2
+from .wildcat3 import WildCat3
+from .fcfw_l2 import FCFrankWolfeL2
+from .tensor_fcfw_l2 import TensorFCFWL2
+from .tensor_fcfw_lq import TensorFCFWLq
+from .learned import LearnedCoreset
+_OPTIONAL_MISSING = []
+
+try:
+    from .value_cluster_is import ValueClusterIS
+except ImportError:
+    ValueClusterIS = None
+    _OPTIONAL_MISSING.append("value_cluster_is")
+try:
+    from .tree_attention import TreeAttention
+except ImportError:
+    TreeAttention = None
+    _OPTIONAL_MISSING.append("tree_attention")
+try:
+    from .value_cluster_methods import (
+        VClusterMeanKey,
+        VClusterSampled,
+        VClusterTopK,
+        KClusterSampled,
+        VClusterLastKey,
+        VClusterMeanLogit,
+        KMeansKK,
+    )
+except ImportError:
+    VClusterMeanKey = None
+    VClusterSampled = None
+    VClusterTopK = None
+    KClusterSampled = None
+    VClusterLastKey = None
+    VClusterMeanLogit = None
+    KMeansKK = None
+    _OPTIONAL_MISSING.extend([
+        "vcluster_meankey",
+        "vcluster_sampled",
+        "vcluster_topk",
+        "kcluster_sampled",
+        "vcluster_lastkey",
+        "vcluster_meanlogit",
+        "kmeans_kk",
+    ])
 
 
 @dataclass
@@ -109,29 +145,8 @@ METHOD_REGISTRY = {
     "kmeans_key": MethodSpec(
         KMeansKeyClustering, "algorithm",
     ),
-    "value_cluster_is": MethodSpec(
-        ValueClusterIS, "algorithm",
-    ),
     "cp_value_cluster": MethodSpec(
         CPValueCluster, "algorithm",
-    ),
-    "vcluster_meankey": MethodSpec(
-        VClusterMeanKey, "algorithm",
-    ),
-    "vcluster_sampled": MethodSpec(
-        VClusterSampled, "algorithm",
-    ),
-    "vcluster_topk": MethodSpec(
-        VClusterTopK, "algorithm",
-    ),
-    "kcluster_sampled": MethodSpec(
-        KClusterSampled, "algorithm",
-    ),
-    "vcluster_lastkey": MethodSpec(
-        VClusterLastKey, "algorithm",
-    ),
-    "vcluster_meanlogit": MethodSpec(
-        VClusterMeanLogit, "algorithm",
     ),
     "vattention_pq": MethodSpec(
         VAttentionPQ, "algorithm",
@@ -139,17 +154,32 @@ METHOD_REGISTRY = {
     "ivfpq_cluster": MethodSpec(
         IVFPQCluster, "algorithm",
     ),
-    "kmeans_kk": MethodSpec(
-        KMeansKK, "algorithm",
+    "fullattention_pq": MethodSpec(
+        FullAttentionPQ, "algorithm",
+    ),
+    "wildcat2": MethodSpec(
+        WildCat2, "algorithm",
+    ),
+    "wildcat3": MethodSpec(
+        WildCat3, "algorithm",
+    ),
+    "fc_frank_wolfe_l2": MethodSpec(
+        FCFrankWolfeL2, "algorithm",
+    ),
+    "tensor_fcfw_l2": MethodSpec(
+        TensorFCFWL2, "algorithm",
+    ),
+    "tensor_fcfw_lq": MethodSpec(
+        TensorFCFWLq, "algorithm",
+    ),
+    "learned": MethodSpec(
+        LearnedCoreset, "algorithm",
     ),
     "kcluster_topk": MethodSpec(
         KClusterTopK, "algorithm",
     ),
     "oracle_cluster_pq_topk": MethodSpec(
         OracleClusterPQTopK, "algorithm",
-    ),
-    "tree_attention": MethodSpec(
-        TreeAttention, "algorithm",
     ),
     "qclust_topk": MethodSpec(
         QClustTopK, "algorithm",
@@ -173,3 +203,49 @@ METHOD_REGISTRY = {
         TopKValueClusters, "algorithm",
     ),
 }
+
+if ValueClusterIS is not None:
+    METHOD_REGISTRY["value_cluster_is"] = MethodSpec(
+        ValueClusterIS, "algorithm",
+    )
+if VClusterMeanKey is not None:
+    METHOD_REGISTRY["vcluster_meankey"] = MethodSpec(
+        VClusterMeanKey, "algorithm",
+    )
+if VClusterSampled is not None:
+    METHOD_REGISTRY["vcluster_sampled"] = MethodSpec(
+        VClusterSampled, "algorithm",
+    )
+if VClusterTopK is not None:
+    METHOD_REGISTRY["vcluster_topk"] = MethodSpec(
+        VClusterTopK, "algorithm",
+    )
+if KClusterSampled is not None:
+    METHOD_REGISTRY["kcluster_sampled"] = MethodSpec(
+        KClusterSampled, "algorithm",
+    )
+if VClusterLastKey is not None:
+    METHOD_REGISTRY["vcluster_lastkey"] = MethodSpec(
+        VClusterLastKey, "algorithm",
+    )
+if VClusterMeanLogit is not None:
+    METHOD_REGISTRY["vcluster_meanlogit"] = MethodSpec(
+        VClusterMeanLogit, "algorithm",
+    )
+if KMeansKK is not None:
+    METHOD_REGISTRY["kmeans_kk"] = MethodSpec(
+        KMeansKK, "algorithm",
+    )
+if TreeAttention is not None:
+    METHOD_REGISTRY["tree_attention"] = MethodSpec(
+        TreeAttention, "algorithm",
+    )
+
+if _OPTIONAL_MISSING:
+    missing = ", ".join(sorted(_OPTIONAL_MISSING))
+    warnings.warn(
+        "Optional algorithm modules unavailable; "
+        f"skipping registry entries: {missing}",
+        RuntimeWarning,
+        stacklevel=1,
+    )

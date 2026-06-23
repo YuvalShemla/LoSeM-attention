@@ -52,6 +52,7 @@ from .plotting import (
     plot_group_cosine_cg_eg_scatter,
     plot_group_cosine_cg_eg_scatter_table,
     plot_group_token_probability_table,
+    plot_fullattention_pq_topk_profiles,
     setup_style,
 )
 from .pi_distribution_plot import (
@@ -438,6 +439,12 @@ class Evaluation:
         self.center_candidate_keys_for_pi_plot = bool(
             exp.get("center_candidate_keys_for_pi_plot", False)
         )
+        self.debug_top_logits = bool(
+            exp.get("debug_top_logits", False)
+        )
+        self.plot_fullattention_pq_topk_profiles = bool(
+            exp.get("plot_fullattention_pq_topk_profiles", True)
+        )
 
         self.head_mode = exp.get(
             "head_mode", "selected_heads"
@@ -674,6 +681,7 @@ class Evaluation:
         all_results = []
         group_cosine_records = []
         per_head_results = {}
+        per_head_fullattention_pq = {}
         rows = []
         cluster_quality_rows = []
         example_ids = set()
@@ -818,6 +826,25 @@ class Evaluation:
                         ),
                     )
                     all_results.append(qr)
+                    for mk, mval in qr.items():
+                        if mk.startswith("_"):
+                            continue
+                        if "FullAttentionPQ_topk" not in mk:
+                            continue
+                        dbg = mval.get("debug_payload")
+                        if not isinstance(dbg, dict):
+                            continue
+                        req_b = int(mval.get("requested_budget", 0))
+                        per_head_fullattention_pq.setdefault(
+                            hi - 1, {}
+                        ).setdefault(req_b, []).append({
+                            "p_true": dbg.get("p_true"),
+                            "p_est_true_z": dbg.get("p_est_true_z"),
+                            "logits_true": dbg.get("logits_true"),
+                            "logits_est": dbg.get("logits_est"),
+                            "z_true": dbg.get("z_true"),
+                            "z_est": dbg.get("z_est"),
+                        })
                     if self.compute_group_cosine_distribution:
                         gc_payload = qr.get(
                             "_group_cosines", {},
@@ -948,14 +975,15 @@ class Evaluation:
                                 tok_prof_group = None
                                 tok_prof_group_over_z = None
                                 tok_prof_bounds = None
-                            print(
-                                _c("[max_e_lg_top100_logits]", ANSI_MAGENTA, bold=True),
-                                _c(f"task={task}", ANSI_CYAN),
-                                _c(f"eval_index={this_eval}", ANSI_YELLOW),
-                                _c(f"head={head_tag}", ANSI_GREEN),
-                                _c(f"method={method_key}", ANSI_CYAN, bold=True),
-                                top_logits,
-                            )
+                            if self.debug_top_logits:
+                                print(
+                                    _c("[max_e_lg_top100_logits]", ANSI_MAGENTA, bold=True),
+                                    _c(f"task={task}", ANSI_CYAN),
+                                    _c(f"eval_index={this_eval}", ANSI_YELLOW),
+                                    _c(f"head={head_tag}", ANSI_GREEN),
+                                    _c(f"method={method_key}", ANSI_CYAN, bold=True),
+                                    top_logits,
+                                )
                             head_ent = None
                             if head_meta and (hi - 1) < len(
                                 head_meta,
@@ -1107,6 +1135,36 @@ class Evaluation:
                 seq_desc=(
                     f"{seq_desc}  |  {settings_desc}"
                 ),
+                config_caption=config_caption,
+            )
+        if (
+            self.plot_fullattention_pq_topk_profiles
+            and per_head_fullattention_pq
+        ):
+            unique_lens = sorted(set(seq_lens))
+            if len(unique_lens) == 1:
+                seq_desc_fpq = f"{unique_lens[0]:,} tok"
+            else:
+                avg = int(np.mean(seq_lens))
+                seq_desc_fpq = f"avg {avg:,} tok"
+            fullpq_profiles = {}
+            for idx, by_budget in per_head_fullattention_pq.items():
+                l, h, k = heads[idx]
+                hm = head_meta[idx] if head_meta else {}
+                fullpq_profiles[idx] = {
+                    "layer": l,
+                    "q_head": h,
+                    "kv_head": k,
+                    "selection_label": hm.get("selection_label", ""),
+                    "effective_entropy": hm.get("effective_entropy"),
+                    "profiles_by_budget": by_budget,
+                }
+            plot_fullattention_pq_topk_profiles(
+                fullpq_profiles,
+                task_dir,
+                self.config.get("plotting", {}),
+                task_name=task,
+                seq_desc=f"{seq_desc_fpq}  |  {settings_desc}",
                 config_caption=config_caption,
             )
 

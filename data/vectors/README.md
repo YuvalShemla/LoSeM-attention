@@ -87,13 +87,14 @@ K = tensors["K_rope_kvhead3"].float().numpy()
 V = tensors["V_kvhead3"].float().numpy()
 ```
 
-Or use the data loader:
+Or use the kvcache example loader:
 ```python
-from src.evaluation.data_loader import load_examples
-for ex in load_examples(
-    "data/vectors", "math_calc",
-    layer=26, head=12, kv_head=3,
-):
+from examples.kvcache.vector_data import iter_selected_heads, load_examples
+
+for ex in iter_selected_heads("data/vectors", "math_calc"):
+    Q, K, V = ex["Q"], ex["K"], ex["V"]
+
+for ex in load_examples("data/vectors", "math_calc", layer=26, head=12, kv_head=3):
     Q, K, V = ex["Q"], ex["K"], ex["V"]
 ```
 

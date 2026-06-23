@@ -48,6 +48,8 @@ class AttentionOutput:
     # list of arrays of member key indices, one per
     # grouped representative/bucket used by the method.
     grouped_member_indices: Optional[List[np.ndarray]] = None
+    # Optional method-specific debug payload.
+    debug_payload: Optional[Dict] = None
 
 
 class AttentionAlgorithm(ABC):

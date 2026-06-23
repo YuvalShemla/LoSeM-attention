@@ -59,7 +59,10 @@ def evaluate_query(
                 results[k] = {
                     "error": err,
                     "budget": out.actual_budget,
+                    "requested_budget": int(b),
                 }
+                if out.debug_payload is not None:
+                    results[k]["debug_payload"] = out.debug_payload
                 if compute_group_cosine_distribution:
                     gc = _group_cosines(
                         problem.keys,
@@ -92,7 +95,10 @@ def evaluate_query(
             results[m.name] = {
                 "error": err,
                 "budget": out.actual_budget,
+                "requested_budget": 0,
             }
+            if out.debug_payload is not None:
+                results[m.name]["debug_payload"] = out.debug_payload
             if compute_group_cosine_distribution:
                 gc = _group_cosines(
                     problem.keys,

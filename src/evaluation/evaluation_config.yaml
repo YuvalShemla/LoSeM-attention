@@ -31,28 +31,33 @@ evaluation:
   use_rope: true
   normalize_keys_to_median_norm: false
   normalize_queries_to_median_norm: false
-  compute_statistics: true
-  compute_group_cosine_distribution: true
+  compute_statistics: false
+  compute_group_cosine_distribution: false
   group_cosine_distribution_bins: 50
   center_candidate_keys_for_pi_plot: true
+  debug_top_logits: false
+  plot_fullattention_pq_topk_profiles: true
   head_mode: "selected_heads"
   layers: "all"
   custom_heads:
     - {layer: 0, q_head: 22, kv_head: 5}
   exclude_sink_token: true
   local_window:
-    size: 0
+    size: 1024
   budget_sweep:
     absolute:
-    - 16
-    - 32
-    - 64
-    - 128
-    - 256
-    - 512
-    - 1024
+#    - 16
+#    - 32
+#    - 64
+#    - 128
+#    - 256
+#    - 512
+#    - 1024
     - 2048
     - 4096
+    - 8192
+#    - 16384
+#    - 32768
 algorithm_configs:
   multiq:
     n_query_clusters:
@@ -186,12 +191,101 @@ algorithm_configs:
   vcluster_meanlogit: {}
   vattention_pq:
     m_sweep:
-    - 8
+    - 4
+    n_codes: 128
   ivfpq_cluster:
     n_cells: 1024
     nprobe_sweep:
     - 32
     m: 8
+    n_codes: 256
+  fullattention_pq:
+    m_sweep:
+    - 4
+    n_codes: 128
+  wildcat2:
+    # Coreset budget: evaluation.budget_sweep.absolute (per candidate region).
+    # Sink + local window: evaluation.exclude_sink_token, local_window.size.
+    # device: null   # null = CUDA if available, else CPU; or "cuda" / "cpu"
+    num_bins: 1
+    q_scale_mode: key_max   # match examples/kvcache/measure_attention_error.py (max key norm)
+    exact_denominator: true   # normalize by exact causal KDE Z_exact, not coreset KDE
+    # q_scale_mode: query   # use the actual query norm as kernel temperature
+    # bin_r: 12   # optional: kvcache-style pivots per bin (budget ≈ n_bins * bin_r)
+    # phi: null   # kernel temperature adjustment (microsoft/wildcat)
+  wildcat3:
+    # Directly calls wildcat/examples/kvcache/compress_kv_cache.py.
+    # Requested budget is converted to a middle compression_ratio.
+    # num_bins=1 makes the compressed middle coreset size equal to budget.
+    num_bins: 1
+    dtype: float32
+    # device: null   # null = CUDA if available, else CPU; or "cuda" / "cpu"
+    # bin_r: null    # optional alternative to num_bins, original press-style
+  fc_frank_wolfe_l2:
+    # Fully-corrective Frank-Wolfe coreset selection in Gaussian kernel space.
+    # Same temperature / weighting / WtdAttn as wildcat2 (q_scale_mode shared);
+    # only the coreset selection differs (FCFW greedy vs randomly-pivoted Nystrom).
+    # Deterministic and nested => error is monotone non-increasing in budget.
+    num_bins: 1
+    q_scale_mode: key_max   # match wildcat2 (max key norm); or query
+    exact_denominator: true   # normalize by exact causal KDE Z_exact, not coreset KDE
+    # bin_r: null           # optional per-bin coreset size
+    # phi: null             # kernel temperature adjustment
+    # device: null          # null = CUDA if available, else CPU; or cuda / cpu
+  tensor_fcfw_l2:
+    # Value-aware tensor FCFW: approximates sum_i phi(k_i) (x) [1, v_i] instead
+    # of sum_i phi(k_i). Coreset keys are existing keys; coreset value vectors
+    # are synthetic (the algorithm's own fully-corrective tensor solve). Same
+    # temperature / WtdAttn as wildcat2. Deterministic and nested.
+    num_bins: 1
+    q_scale_mode: key_max   # match wildcat2 (max key norm); or query
+    oracle: fw              # fw = argmax ||G[i,:]||^2; or omp
+    exact_denominator: true   # normalize by exact causal KDE Z_exact, not coreset KDE
+    # bin_r: null
+    # phi: null
+    # device: null
+  tensor_fcfw_lq:
+    # Tensor FCFW under the query-weighted lq norm. Instead of the RKHS-l2
+    # (Frobenius) error of sum_i phi(k_i) (x) [1, v_i], it minimizes
+    #   ||sigma - sigma'||_* = E_{q in Q} | (sigma - sigma') . psi(q) |,
+    # i.e. the L1-over-queries average of the unnormalized readout error, where
+    # Q is the set of earlier-context queries (same probes as `learned`).
+    # Selection = FCFW in the empirical attention Gram A^T A (A_{q,i} =
+    # exp(scale q.k_i)); correction = IRLS for the L_{2,1} solve. No temperature
+    # rescaling / centering (uses the real attention kernel over Q).
+    n_train_queries: 1280   # context queries nearest the test position (probes Q)
+    oracle: fw              # fw = argmax ||G[i,:]||^2; or omp
+    irls_iters: 5           # IRLS reweighting steps for the lq solve (<=1 => L2)
+    rcond: 1.0e-3           # relative SVD cutoff for the value solve; keeps synthetic
+                            # values bounded when budget >= n_train_queries (#probes)
+    exact_denominator: true   # normalize by exact causal KDE Z_exact, not coreset KDE
+    # device: null
+  learned:
+    # Gradient-descent synthetic (K', V', w') for the residual (candidate) region.
+    # Training matches the exact eval pipeline (exact sink + local window + learned
+    # pairs, normalized as weighted_attention) against true full attention over the
+    # fixed reference (test) context. Only the residual pairs are learned; special
+    # tokens are added at evaluation. Each pair carries a learnable mass w'.
+    # Pure init (k-means or random over candidates), not FCFW. Nested/monotone
+    # budget sweep: larger budgets freeze the smaller trained coreset and train
+    # only the new pairs (so error is non-increasing in budget).
+    n_train_queries: 5000     # context queries nearest the test position (probes)
+    init: kmeans              # kmeans | random
+    lr: 0.05
+    n_steps: 500
+    batch_size: 128
+    loss: relative_l2         # relative_l2 | mse
+    rel_l2_floor: 0.01        # floor the relative-L2 denominator (stabilizes high-entropy heads)
+    val_fraction: 0.1
+    early_stop_patience: 50
+    lr_decay_step: 200
+    lr_decay_gamma: 0.5
+    nested_budget: true       # monotone: freeze smaller coreset, train only new pairs
+    kmeans_subsample: 8192    # cap candidates used for k-means init
+    exact_denominator: true   # normalize by exact causal Z_exact (matches eval)
+    n_sink: 1                 # match evaluation.exclude_sink_token
+    local_window: 1024        # match evaluation.local_window.size
+    # device: null
   kmeans_kk: {}
   tree_attention:
     starting_depths:
@@ -210,10 +304,12 @@ algorithm_configs:
     - oracle
     - pq
     m_pq: 8
+    n_codes_pq: 256
   oracle_cluster_pq_topk:
     n_clusters_sweep:
     - 1024
     m_pq: 8
+    n_codes_pq: 256
   qclust_topk:
     n_proto: 8
     n_train_queries:
@@ -255,7 +351,7 @@ plotting:
   linear_scale: true
   idealized_linestyle: --
   algorithm_linestyle: '-'
-  error_bands: false
+  error_bands: true
   idealized_colors:
     IdealTopK: '#d62728'
     IdealSampling: '#2ca02c'
@@ -331,6 +427,34 @@ plotting:
       topk: '#795548'
       hybrid: '#795548'
       marker: P
+    fullattention_pq:
+      topk: '#5d4037'
+      hybrid: '#5d4037'
+      marker: '8'
+    wildcat2:
+      topk: '#7b1fa2'
+      hybrid: '#7b1fa2'
+      marker: h
+    wildcat3:
+      topk: '#4a148c'
+      hybrid: '#4a148c'
+      marker: H
+    fc_frank_wolfe_l2:
+      topk: '#00897b'
+      hybrid: '#00897b'
+      marker: P
+    tensor_fcfw_l2:
+      topk: '#c2185b'
+      hybrid: '#c2185b'
+      marker: X
+    tensor_fcfw_lq:
+      topk: '#ad1457'
+      hybrid: '#ad1457'
+      marker: P
+    learned:
+      topk: '#1565c0'
+      hybrid: '#1565c0'
+      marker: v
     kmeans_kk:
       topk: '#ff7f0e'
       hybrid: '#ff7f0e'
