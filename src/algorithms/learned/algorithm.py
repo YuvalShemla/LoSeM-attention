@@ -23,6 +23,7 @@ from ..base import AttentionAlgorithm, AttentionInput, AttentionOutput
 from ...core import softmax
 from ..wildcat2._device import resolve_device
 from ..wildcat2.weighted_attention import weighted_attention
+from ..probe_queries import DEFAULT_N_TRAIN_QUERIES, n_train_queries_list
 from .learn_coreset import (
     build_probe_queries,
     learn_kv_coreset,
@@ -35,7 +36,7 @@ class LearnedCoreset(AttentionAlgorithm):
 
     def __init__(
         self,
-        n_train_queries: int = 5000,
+        n_train_queries: int = DEFAULT_N_TRAIN_QUERIES,
         init: str = "kmeans",
         lr: float = 0.05,
         n_steps: int = 500,
@@ -263,9 +264,7 @@ class LearnedCoreset(AttentionAlgorithm):
 
     @staticmethod
     def expand_from_config(cfg: dict) -> list:
-        n_train_list = cfg.get("n_train_queries", [5000])
-        if isinstance(n_train_list, int):
-            n_train_list = [n_train_list]
+        n_train_list = n_train_queries_list(cfg)
         init = cfg.get("init", "kmeans")
         instances = []
         for n_train in n_train_list:

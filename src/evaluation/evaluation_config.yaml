@@ -22,12 +22,16 @@ tasks:
 - multi_doc_qa
 - single_doc_qa
 skip_idealized:
+- ideal_topk
+- ideal_sampling_subset
 - ideal_equal_splits
 - ideal_sampling_is
+- ideal_equal_weight_splits
 evaluation:
   seed: 42
   n_queries: 1
   n_examples: 1
+  n_train_queries: 10000   # |Q| for learned / TFCFW-lq; should exceed max budget
   use_rope: true
   normalize_keys_to_median_norm: false
   normalize_queries_to_median_norm: false
@@ -37,6 +41,7 @@ evaluation:
   center_candidate_keys_for_pi_plot: true
   debug_top_logits: false
   plot_fullattention_pq_topk_profiles: true
+  plot_probe_training_error: true
   head_mode: "selected_heads"
   layers: "all"
   custom_heads:
@@ -52,10 +57,10 @@ evaluation:
 #    - 128
 #    - 256
 #    - 512
-#    - 1024
+    - 1024
     - 2048
     - 4096
-    - 8192
+#    - 8192
 #    - 16384
 #    - 32768
 algorithm_configs:
@@ -209,7 +214,7 @@ algorithm_configs:
     # device: null   # null = CUDA if available, else CPU; or "cuda" / "cpu"
     num_bins: 1
     q_scale_mode: key_max   # match examples/kvcache/measure_attention_error.py (max key norm)
-    exact_denominator: true   # normalize by exact causal KDE Z_exact, not coreset KDE
+    exact_denominator: false   # normalize by exact causal KDE Z_exact, not coreset KDE
     # q_scale_mode: query   # use the actual query norm as kernel temperature
     # bin_r: 12   # optional: kvcache-style pivots per bin (budget ≈ n_bins * bin_r)
     # phi: null   # kernel temperature adjustment (microsoft/wildcat)
@@ -228,7 +233,7 @@ algorithm_configs:
     # Deterministic and nested => error is monotone non-increasing in budget.
     num_bins: 1
     q_scale_mode: key_max   # match wildcat2 (max key norm); or query
-    exact_denominator: true   # normalize by exact causal KDE Z_exact, not coreset KDE
+    exact_denominator: false   # normalize by exact causal KDE Z_exact, not coreset KDE
     # bin_r: null           # optional per-bin coreset size
     # phi: null             # kernel temperature adjustment
     # device: null          # null = CUDA if available, else CPU; or cuda / cpu
@@ -240,7 +245,7 @@ algorithm_configs:
     num_bins: 1
     q_scale_mode: key_max   # match wildcat2 (max key norm); or query
     oracle: fw              # fw = argmax ||G[i,:]||^2; or omp
-    exact_denominator: true   # normalize by exact causal KDE Z_exact, not coreset KDE
+    exact_denominator: false   # normalize by exact causal KDE Z_exact, not coreset KDE
     # bin_r: null
     # phi: null
     # device: null
@@ -253,12 +258,13 @@ algorithm_configs:
     # Selection = FCFW in the empirical attention Gram A^T A (A_{q,i} =
     # exp(scale q.k_i)); correction = IRLS for the L_{2,1} solve. No temperature
     # rescaling / centering (uses the real attention kernel over Q).
-    n_train_queries: 1280   # context queries nearest the test position (probes Q)
+    # Probe set Q: evaluation.n_train_queries (shared with learned).
     oracle: fw              # fw = argmax ||G[i,:]||^2; or omp
     irls_iters: 5           # IRLS reweighting steps for the lq solve (<=1 => L2)
-    rcond: 1.0e-3           # relative SVD cutoff for the value solve; keeps synthetic
-                            # values bounded when budget >= n_train_queries (#probes)
-    exact_denominator: true   # normalize by exact causal KDE Z_exact, not coreset KDE
+    rcond: 1.0e-3           # relative SVD cutoff for the value solve (safety when |Q| ~ budget)
+    exact_denominator: false   # normalize by exact causal KDE Z_exact, not coreset KDE
+    n_sink: 1                 # match evaluation.exclude_sink_token
+    local_window: 1024        # match evaluation.local_window.size
     # device: null
   learned:
     # Gradient-descent synthetic (K', V', w') for the residual (candidate) region.
@@ -269,7 +275,7 @@ algorithm_configs:
     # Pure init (k-means or random over candidates), not FCFW. Nested/monotone
     # budget sweep: larger budgets freeze the smaller trained coreset and train
     # only the new pairs (so error is non-increasing in budget).
-    n_train_queries: 5000     # context queries nearest the test position (probes)
+    # Probe set Q: evaluation.n_train_queries (shared with TFCFW-lq).
     init: kmeans              # kmeans | random
     lr: 0.05
     n_steps: 500
@@ -282,7 +288,7 @@ algorithm_configs:
     lr_decay_gamma: 0.5
     nested_budget: true       # monotone: freeze smaller coreset, train only new pairs
     kmeans_subsample: 8192    # cap candidates used for k-means init
-    exact_denominator: true   # normalize by exact causal Z_exact (matches eval)
+    exact_denominator: false   # false: coreset KDE denominator (matches WtdAttn eval)
     n_sink: 1                 # match evaluation.exclude_sink_token
     local_window: 1024        # match evaluation.local_window.size
     # device: null

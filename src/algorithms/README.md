@@ -357,19 +357,24 @@ candidates, `c` a global shift that cancels) and `M = [1, V]`:
 Unlike `tensor_fcfw_l2` there is **no temperature rescaling or key centering** —
 the objective is defined directly through the real attention kernel evaluated at
 `Q`, so selected keys are used verbatim and the `(value, mass)` solve is
-calibrated for the kernel `weighted_attention` consumes. Deterministic and
-nested (greedy forward selection ⇒ the `lq` error over `Q` is non-increasing in
-budget; the `state` dict warm-starts larger budgets). Supports
+calibrated for the kernel `weighted_attention` consumes. **Lifecycle matches
+`learned`:** the coreset is built once at the reference (last test) position;
+at evaluation only the exact sink + local window change with query position.
+Deterministic and nested (greedy forward selection ⇒ the `lq` error over `Q` is
+non-increasing in budget; warm-starts larger budgets). Supports
 `exact_denominator` like the other coreset methods.
 
 ```yaml
+evaluation:
+  n_train_queries: 5000   # |Q| for learned + TFCFW-lq (exceed max budget)
 algorithm_configs:
   tensor_fcfw_lq:
-    n_train_queries: 5000   # probe queries Q (nearest the test position)
     oracle: fw              # fw = argmax ||G[i,:]||^2; or omp
     irls_iters: 5           # IRLS steps for the lq solve (<=1 => L2 surrogate)
     rcond: 1.0e-3           # relative SVD cutoff for the value solve
     exact_denominator: true
+    n_sink: 1
+    local_window: 1024
 ```
 
 ### `LearnedCoreset`
@@ -398,7 +403,8 @@ earlier self-normalized formulation left the mass uncalibrated and the candidate
 contribution exploded when combined with the exact special tokens / `Z_exact`.
 
 **Probe queries.** Context queries nearest the test position (the last
-`n_train_queries`, excluding the evaluation queries). The forward pass is fully
+`evaluation.n_train_queries`, excluding the evaluation queries). Shared with
+TFCFW-lq via `src/algorithms/probe_queries.py`. The forward pass is fully
 vectorized over the probe batch; Adam with step LR decay and early stopping on a
 held-out 10% split. The relative-L2 denominator is floored (`rel_l2_floor`) so
 high-entropy heads with small-norm targets do not dominate the gradient.
@@ -424,9 +430,10 @@ fully-corrective tensor solve; Learned optimizes `(K', V', w')` freely with SGD
 from a pure (k-means/random) start.
 
 ```yaml
+evaluation:
+  n_train_queries: 5000
 algorithm_configs:
   learned:
-    n_train_queries: 5000
     init: kmeans
     lr: 0.05
     n_steps: 500

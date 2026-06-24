@@ -20,7 +20,10 @@ Design:
   like the special tokens) and trains only the newly added pairs, initialized at
   near-zero mass. The starting point reproduces the smaller coreset, so error is
   non-increasing in budget (in the training/validation objective).
-* The forward pass is fully vectorized over the probe batch.
+* The forward pass matches ``weighted_attention`` numerically: with
+  ``exact_denominator`` the shift uses the global max logit over all causal keys
+  and divides by ``Z_exact``; otherwise the shift is the max over the coreset
+  (special + frozen + new) and the denominator is the coreset KDE mass.
 """
 
 from __future__ import annotations
@@ -142,41 +145,45 @@ def _precompute_targets(
     """
     Fixed per-probe constants over the reference context.
 
-    The "fixed" numerator/denominator combine the exact special tokens with the
-    frozen (already-learned, smaller-budget) pairs; both are constant during the
-    current budget's optimization. Uses the global max-logit shift so the forward
-    matches ``weighted_attention`` numerically.
+  Stores logits/values for each coreset component (special, frozen, new) so
+  ``_forward_pred`` can apply the same max-logit shift as ``weighted_attention``:
+  global max over all causal keys when ``exact_denominator`` is true, and
+  coreset-local max (special + frozen + new) when it is false.
     """
     logits = scale * (probe_queries @ keys_ref.T)        # [m, Nref]
-    max_l = logits.amax(dim=-1)                          # [m]
-    e = (logits - max_l.unsqueeze(-1)).exp()             # [m, Nref]
-    z_exact = e.sum(dim=-1)                              # [m]
-    target = (e @ values_ref) / z_exact.unsqueeze(-1)    # [m, d]
+    max_global = logits.amax(dim=-1)                       # [m]
+    e = (logits - max_global.unsqueeze(-1)).exp()          # [m, Nref]
+    z_exact = e.sum(dim=-1)                                # [m]
+    target = (e @ values_ref) / z_exact.unsqueeze(-1)      # [m, d]
 
     if len(sp_idx) > 0:
         sp = torch.as_tensor(sp_idx, dtype=torch.long, device=e.device)
-        e_sp = e[:, sp]
-        n_fixed = e_sp @ values_ref[sp]                  # [m, d]
-        z_fixed = e_sp.sum(dim=-1)                       # [m]
+        sp_logits = logits[:, sp]                          # [m, n_sp]
+        sp_values = values_ref[sp]                         # [n_sp, d]
     else:
-        n_fixed = torch.zeros_like(target)
-        z_fixed = torch.zeros_like(z_exact)
+        sp_logits = None
+        sp_values = None
 
     if frozen is not None:
         fk, fv, fw = frozen
-        lf = scale * (probe_queries @ fk.T)              # [m, n_frozen]
-        ef = (lf - max_l.unsqueeze(-1)).clamp(max=_EXP_CLAMP).exp()
-        efw = ef * fw.unsqueeze(0)
-        n_fixed = n_fixed + efw @ fv
-        z_fixed = z_fixed + efw.sum(dim=-1)
+        frozen_logits = scale * (probe_queries @ fk.T)     # [m, n_frozen]
+        frozen_values = fv
+        frozen_weights = fw
+    else:
+        frozen_logits = None
+        frozen_values = None
+        frozen_weights = None
 
     return {
         "queries": probe_queries.detach(),
-        "max_l": max_l.detach(),
+        "max_global": max_global.detach(),
         "z_exact": z_exact.detach(),
-        "z_fixed": z_fixed.detach(),
-        "n_fixed": n_fixed.detach(),
         "target": target.detach(),
+        "sp_logits": None if sp_logits is None else sp_logits.detach(),
+        "sp_values": None if sp_values is None else sp_values.detach(),
+        "frozen_logits": None if frozen_logits is None else frozen_logits.detach(),
+        "frozen_values": None if frozen_values is None else frozen_values.detach(),
+        "frozen_weights": None if frozen_weights is None else frozen_weights.detach(),
     }
 
 
@@ -190,21 +197,54 @@ def _forward_pred(
     exact_denominator: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Approximate attention for a subset of probes; mirrors ``weighted_attention``."""
-    q = consts["queries"][idx]                           # [b, d]
-    max_l = consts["max_l"][idx]                         # [b]
-    n_fixed = consts["n_fixed"][idx]                     # [b, d]
     target = consts["target"][idx]                       # [b, d]
+    w_new = log_w.exp()
 
-    logits_pr = scale * (q @ k_new.T)                    # [b, B_new]
-    e_pr = (logits_pr - max_l.unsqueeze(-1)).clamp(max=_EXP_CLAMP).exp()
-    w = log_w.exp()
-    ew = e_pr * w.unsqueeze(0)
-    num = n_fixed + ew @ v_new
+    logits_parts: list[torch.Tensor] = []
+    if consts["sp_logits"] is not None:
+        logits_parts.append(consts["sp_logits"][idx])
+    if consts["frozen_logits"] is not None:
+        logits_parts.append(consts["frozen_logits"][idx])
+    logits_new = scale * (consts["queries"][idx] @ k_new.T)
+    logits_parts.append(logits_new)
+    all_core_logits = torch.cat(logits_parts, dim=-1)      # [b, n_core]
+
+    if exact_denominator:
+        shift = consts["max_global"][idx].unsqueeze(-1)
+    else:
+        shift = all_core_logits.amax(dim=-1, keepdim=True)
+
+    num = torch.zeros_like(target)
+    den_core = torch.zeros(target.shape[0], device=target.device, dtype=target.dtype)
+
+    offset = 0
+    if consts["sp_logits"] is not None:
+        n_sp = consts["sp_logits"].shape[1]
+        e_sp = (all_core_logits[:, offset:offset + n_sp] - shift).clamp(max=_EXP_CLAMP).exp()
+        num = num + e_sp @ consts["sp_values"]
+        den_core = den_core + e_sp.sum(dim=-1)
+        offset += n_sp
+
+    if consts["frozen_logits"] is not None:
+        n_fr = consts["frozen_logits"].shape[1]
+        e_fr = (all_core_logits[:, offset:offset + n_fr] - shift).clamp(max=_EXP_CLAMP).exp()
+        fw = consts["frozen_weights"]
+        ew_fr = e_fr * fw.unsqueeze(0)
+        num = num + ew_fr @ consts["frozen_values"]
+        den_core = den_core + ew_fr.sum(dim=-1)
+        offset += n_fr
+
+    n_new = logits_new.shape[1]
+    e_new = (all_core_logits[:, offset:offset + n_new] - shift).clamp(max=_EXP_CLAMP).exp()
+    ew_new = e_new * w_new.unsqueeze(0)
+    num = num + ew_new @ v_new
+    den_core = den_core + ew_new.sum(dim=-1)
 
     if exact_denominator:
         den = consts["z_exact"][idx].unsqueeze(-1)
     else:
-        den = (consts["z_fixed"][idx] + ew.sum(dim=-1)).unsqueeze(-1)
+        den = den_core.unsqueeze(-1)
+
     pred = num / den.clamp_min(1e-20)
     return pred, target
 

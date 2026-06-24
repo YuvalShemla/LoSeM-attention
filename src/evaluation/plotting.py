@@ -1153,6 +1153,228 @@ def plot_per_head_comparison(
         )
 
 
+def _probe_method_prefix(method_key: str) -> str:
+    """``Learned-kmeans-1024`` -> ``Learned-kmeans``; ``TFCFW-lq-4096`` -> ``TFCFW-lq``."""
+    return method_key.rsplit("-", 1)[0]
+
+
+def _probe_method_color_key(method_prefix: str) -> str:
+    if method_prefix.startswith("Learned"):
+        return "learned"
+    if method_prefix.startswith("TFCFW-lq"):
+        return "tensor_fcfw_lq"
+    return method_prefix.lower().replace("-", "_")
+
+
+def _probe_method_budget_points(
+    agg: Dict,
+    method_prefix: str,
+    budgets: List[int],
+) -> tuple:
+    """Extract (x, y, y_std) for a method family across requested budgets."""
+    x_vals, y_vals, s_vals = [], [], []
+    for b in budgets:
+        key = f"{method_prefix}-{b}"
+        if key not in agg:
+            continue
+        entry = agg[key]
+        x_vals.append(entry["budget_mean"])
+        y_vals.append(entry["error_mean"])
+        s_vals.append(
+            entry.get(
+                "probe_error_std_mean",
+                entry.get("error_std", 0.0),
+            ),
+        )
+    return x_vals, y_vals, s_vals
+
+
+def plot_probe_training_error(
+    per_head_probe_aggs: Dict[int, Dict],
+    out_dir: Path,
+    plot_cfg: Dict,
+    budgets: List[int],
+    task_name: str = "",
+    seq_desc: str = "",
+    config_caption: str = "",
+):
+    """
+    Per-head probe mean rel-L2 vs budget for probe-Q methods.
+
+    Solid lines: mean rel-L2 over the training probe set ``Q`` (same metric as
+    eval). Dashed overlays: held-out test-query eval error from the main run.
+    """
+    setup_style()
+    if not per_head_probe_aggs:
+        return
+
+    figsize = tuple(plot_cfg.get("figsize", [16, 10]))
+    dpi = plot_cfg.get("dpi", 200)
+    show_bands = plot_cfg.get("error_bands", True)
+    algo_colors = plot_cfg.get("algorithm_colors", {})
+
+    n = len(per_head_probe_aggs)
+    cols = min(n, 3)
+    rows_n = (n + cols - 1) // cols
+    if n == rows_n * cols:
+        rows_n += 1
+
+    scales = []
+    if plot_cfg.get("log_scale", True):
+        scales.append(True)
+    if plot_cfg.get("linear_scale", True):
+        scales.append(False)
+
+    def _per_head_sort_key(i: int) -> tuple:
+        info = per_head_probe_aggs[i]
+        ent = info.get("effective_entropy")
+        if ent is None:
+            e = float("inf")
+        else:
+            try:
+                e = float(ent)
+                if not np.isfinite(e):
+                    e = float("inf")
+            except (TypeError, ValueError):
+                e = float("inf")
+        return (
+            e,
+            info.get("layer", 10**9),
+            info.get("q_head", 10**9),
+        )
+
+    sorted_idxs = sorted(
+        per_head_probe_aggs.keys(),
+        key=_per_head_sort_key,
+    )
+
+    for log_scale in scales:
+        scale = "log" if log_scale else "linear"
+        fig, axes = plt.subplots(
+            rows_n, cols,
+            figsize=(
+                figsize[0],
+                min(figsize[1] * rows_n / 2, 50),
+            ),
+            squeeze=False,
+        )
+
+        for i, idx in enumerate(sorted_idxs):
+            r, c = divmod(i, cols)
+            ax = axes[r][c]
+            info = per_head_probe_aggs[idx]
+            probe_agg = info.get("probe_agg", {})
+            test_agg = info.get("test_agg", {})
+
+            prefixes = sorted({
+                _probe_method_prefix(k)
+                for k in probe_agg
+            })
+            for prefix in prefixes:
+                ck = _probe_method_color_key(prefix)
+                fam = algo_colors.get(ck, {})
+                color = fam.get("hybrid", fam.get("topk", "#333333"))
+                marker = fam.get("marker", "o")
+
+                x_p, y_p, s_p = _probe_method_budget_points(
+                    probe_agg, prefix, budgets,
+                )
+                if x_p:
+                    _plot_with_error_band(
+                        ax, x_p, y_p,
+                        s_p if show_bands else None,
+                        color=color,
+                        ls="-", marker=marker,
+                        lw=2.2, ms=7, zorder=5,
+                        label=f"{prefix} (probe)",
+                    )
+
+                x_t, y_t, s_t = _probe_method_budget_points(
+                    test_agg, prefix, budgets,
+                )
+                if x_t:
+                    _plot_with_error_band(
+                        ax, x_t, y_t,
+                        s_t if show_bands else None,
+                        color=color,
+                        ls="--", marker=marker,
+                        lw=2.0, ms=6, alpha=0.85, zorder=4,
+                        label=f"{prefix} (test)",
+                    )
+
+            title = (
+                f"L{info['layer']}H{info['q_head']}"
+            )
+            lbl = info.get("selection_label", "")
+            ent = info.get("effective_entropy")
+            if lbl:
+                title += f" ({lbl}"
+                if ent is not None:
+                    title += f", ent={ent:.2f}"
+                title += ")"
+            elif ent is not None:
+                title += f" (ent={ent:.2f})"
+            n_probes = info.get("n_probes")
+            if n_probes:
+                title += f"\n|Q|={n_probes:,}"
+            ax.set_title(title, fontsize=10)
+
+            if log_scale:
+                ax.set_xscale("log")
+                ax.set_yscale("log")
+                _format_log_axes(ax, budgets)
+            ax.set_xlabel("Budget")
+            ax.set_ylabel("rel-L2 error")
+            ax.legend(fontsize=7, loc="best")
+
+        spare_start = n
+        info_placed = False
+        for j in range(spare_start, rows_n * cols):
+            r, c = divmod(j, cols)
+            if not info_placed:
+                ax_info = axes[r][c]
+                ax_info.axis("off")
+                lines = [
+                    "Probe training error",
+                    "",
+                    "Solid: mean rel-L2 over probe set Q",
+                    "(same metric as eval).",
+                    "",
+                    "Dashed: held-out test-query",
+                    "eval error (main run).",
+                ]
+                ax_info.text(
+                    0.02, 0.98, "\n".join(lines),
+                    transform=ax_info.transAxes,
+                    fontsize=9,
+                    verticalalignment="top",
+                    family="monospace",
+                )
+                info_placed = True
+            else:
+                axes[r][c].set_visible(False)
+
+        suptitle = "Probe Training Error vs Budget"
+        if task_name:
+            suptitle = f"{task_name} — {suptitle}"
+        if seq_desc:
+            suptitle += f" — {seq_desc}"
+        suptitle += f" ({scale})"
+        if config_caption:
+            suptitle = f"{suptitle}\n{config_caption}"
+        fig.suptitle(
+            suptitle, fontsize=14,
+            fontweight="bold",
+        )
+        plt.tight_layout()
+        save_figure(
+            fig,
+            out_dir
+            / f"probe_training_error_{scale}.png",
+            dpi=dpi,
+        )
+
+
 def plot_fullattention_pq_topk_profiles(
     per_head_profiles: Dict[int, Dict],
     out_dir: Path,

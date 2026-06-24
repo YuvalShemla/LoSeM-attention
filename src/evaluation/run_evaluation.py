@@ -41,12 +41,15 @@ from .evaluator import (
     aggregate_group_cosines_by_head_group,
     _algorithm_family,
     weighted_aggregate_heads,
+    evaluate_probe_set_errors,
+    is_probe_q_method,
 )
 from .plotting import (
     format_eval_config_caption,
     _group_l1_cgm_over_z_quantiles_line,
     plot_evaluation, plot_overview,
     plot_per_head_comparison,
+    plot_probe_training_error,
     plot_group_cosine_distributions,
     plot_group_cosine_table,
     plot_group_cosine_cg_eg_scatter,
@@ -156,7 +159,9 @@ def replay_plots(results_dir: Path) -> None:
         )
     algo_names = spec.get("algorithms", [])
     algo_cfgs = config.get("algorithm_configs", {})
-    algorithms = _resolve_methods(algo_names, algo_cfgs)
+    algorithms = _resolve_methods(
+        algo_names, algo_cfgs, config.get("evaluation", {}),
+    )
     families = build_algorithm_plot_families(
         algorithms, config,
     )
@@ -306,6 +311,9 @@ def replay_plots(results_dir: Path) -> None:
                         "effective_entropy",
                     ),
                     "n_queries": d.get("n_queries", 0),
+                    "probe_agg": d.get(
+                        "probe_aggregated_stats", {},
+                    ),
                 }
             if len(per_head_aggs) > 1:
                 plot_per_head_comparison(
@@ -315,6 +323,42 @@ def replay_plots(results_dir: Path) -> None:
                     seq_desc=seq_desc,
                     config_caption=config_caption,
                 )
+                per_head_probe_aggs = {}
+                for idx, info in per_head_aggs.items():
+                    probe_agg = info.get("probe_agg", {})
+                    if not probe_agg:
+                        continue
+                    n_probes = 0
+                    for entry in probe_agg.values():
+                        n_probes = int(entry.get("n_probes", 0))
+                        if n_probes:
+                            break
+                    per_head_probe_aggs[idx] = {
+                        "layer": info["layer"],
+                        "q_head": info["q_head"],
+                        "kv_head": info["kv_head"],
+                        "selection_label": info.get(
+                            "selection_label", "",
+                        ),
+                        "effective_entropy": info.get(
+                            "effective_entropy",
+                        ),
+                        "n_probes": n_probes,
+                        "probe_agg": probe_agg,
+                        "test_agg": info["agg"],
+                    }
+                if per_head_probe_aggs and config.get(
+                    "evaluation", {},
+                ).get("plot_probe_training_error", True):
+                    plot_probe_training_error(
+                        per_head_probe_aggs,
+                        task_dir,
+                        plotting,
+                        budgets,
+                        task_name=task,
+                        seq_desc=seq_desc,
+                        config_caption=config_caption,
+                    )
 
     if per_task_agg:
         ov_dir = results_dir / "overview"
@@ -334,12 +378,17 @@ def replay_plots(results_dir: Path) -> None:
     )
 
 
-def _resolve_methods(algo_names, algo_configs):
+def _resolve_methods(algo_names, algo_configs, evaluation_cfg=None):
     """Expand algorithm configs into instances."""
+    from ..algorithms.probe_queries import inject_evaluation_probe_q
+
+    evaluation_cfg = evaluation_cfg or {}
     methods = []
     for name in algo_names:
         spec = METHOD_REGISTRY[name]
-        cfg = algo_configs.get(name, {})
+        cfg = inject_evaluation_probe_q(
+            name, algo_configs.get(name, {}), evaluation_cfg,
+        )
         methods.extend(
             spec.cls.expand_from_config(cfg)
         )
@@ -445,6 +494,9 @@ class Evaluation:
         self.plot_fullattention_pq_topk_profiles = bool(
             exp.get("plot_fullattention_pq_topk_profiles", True)
         )
+        self.plot_probe_training_error = bool(
+            exp.get("plot_probe_training_error", True)
+        )
 
         self.head_mode = exp.get(
             "head_mode", "selected_heads"
@@ -494,7 +546,7 @@ class Evaluation:
             "algorithm_configs", {}
         )
         algorithms = _resolve_methods(
-            algo_names, algo_cfgs,
+            algo_names, algo_cfgs, self.config.get("evaluation", {}),
         )
         methods = idealized + algorithms
 
@@ -681,6 +733,7 @@ class Evaluation:
         all_results = []
         group_cosine_records = []
         per_head_results = {}
+        per_head_probe_results = {}
         per_head_fullattention_pq = {}
         rows = []
         cluster_quality_rows = []
@@ -748,6 +801,23 @@ class Evaluation:
                         query_positions=qpos_list,
                         seed=self.seed,
                     )
+
+                probe_qr_merged: Dict = {}
+                for m in methods:
+                    if not is_probe_q_method(m):
+                        continue
+                    pe = evaluate_probe_set_errors(
+                        m, K, V, self.head_dim,
+                        self.budgets,
+                        self.n_sink,
+                        self.local_window,
+                        rng,
+                    )
+                    probe_qr_merged.update(pe)
+                if probe_qr_merged:
+                    per_head_probe_results.setdefault(
+                        hi - 1, [],
+                    ).append(probe_qr_merged)
 
                 # Collect cluster quality metrics
                 for m in methods:
@@ -1111,6 +1181,13 @@ class Evaluation:
                     "effective_entropy": ent,
                     "n_queries": len(results),
                     "aggregated_stats": head_agg,
+                    "probe_aggregated_stats": (
+                        aggregate_results(
+                            per_head_probe_results.get(idx, []),
+                        )
+                        if per_head_probe_results.get(idx)
+                        else {}
+                    ),
                 },
             )
 
@@ -1137,6 +1214,48 @@ class Evaluation:
                 ),
                 config_caption=config_caption,
             )
+        if (
+            self.plot_probe_training_error
+            and per_head_probe_results
+            and len(per_head_aggs) > 1
+        ):
+            per_head_probe_aggs = {}
+            for idx, info in per_head_aggs.items():
+                probe_list = per_head_probe_results.get(idx, [])
+                if not probe_list:
+                    continue
+                probe_agg = aggregate_results(probe_list)
+                n_probes = 0
+                for entry in probe_agg.values():
+                    n_probes = int(entry.get("n_probes", 0))
+                    if n_probes:
+                        break
+                per_head_probe_aggs[idx] = {
+                    "layer": info["layer"],
+                    "q_head": info["q_head"],
+                    "kv_head": info["kv_head"],
+                    "selection_label": info.get(
+                        "selection_label", "",
+                    ),
+                    "effective_entropy": info.get(
+                        "effective_entropy",
+                    ),
+                    "n_probes": n_probes,
+                    "probe_agg": probe_agg,
+                    "test_agg": info["agg"],
+                }
+            if per_head_probe_aggs:
+                plot_probe_training_error(
+                    per_head_probe_aggs,
+                    task_dir,
+                    self.config.get("plotting", {}),
+                    self.budgets,
+                    task_name=task,
+                    seq_desc=(
+                        f"{seq_desc}  |  {settings_desc}"
+                    ),
+                    config_caption=config_caption,
+                )
         if (
             self.plot_fullattention_pq_topk_profiles
             and per_head_fullattention_pq
