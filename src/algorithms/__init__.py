@@ -1,330 +1,127 @@
 """
-Algorithm registry.
+Algorithm registry — graceful imports for partial installations.
 
-Idealized methods are distinguished by kind='idealized'
-and are auto-included in every evaluation. Algorithms
-must be explicitly requested.
+All imports are wrapped in try/except so the package works even when
+only a subset of algorithm modules are available (e.g., on Colab with
+only the core modules cloned).
 """
 
 from dataclasses import dataclass
 import warnings
 
-from .idealized_methods import (
-    IdealTopK,
-    IdealSamplingSubset,
-    IdealSamplingIS,
-    VAttentionOracle,
-    IdealEqualSplits,
-    IdealEqualWeightSplits,
-)
-from .multiq_grouping import MultiQGrouping
-from .kmeans_clustering import KMeansClustering
-from .lsh_crosspoly_multiprobe import LSHCrossPolytope
-from .lsh_cp_group import LSHCPGroup
-from .lsh_crosspoly_clustered import LSHCrossPolytopeClustered
-from .lsh_simhash_snis import LSHSimHashSNIS
-from .lsh_crosspoly_snis import LSHCrossPolySNIS
-from .kmeans_value_clustering import (
-    KMeansValueClustering,
-    KMeansKeyClustering,
-)
-from .cp_value_cluster import CPValueCluster
-from .kcluster_topk import KClusterTopK, OracleClusterPQTopK
-from .mq_cluster_topk import (
-    MQClusterTopK, OracleTopKMQCluster, PQTopKOnly,
-    MQClusterTrueZ, MQClusterPQZ, PQFullAttn,
-)
-from .qclust_topk import QClustTopK
-from .qclust_augmented import QClustAugTopK
-from .twostage_cluster import KeyClustValSub, QClustValSub
-from .topk_cluster_comparison import (
-    TopKKeyClusters,
-    TopKOracleClusters,
-    TopKValueClusters,
-)
-from .topk_cluster_eval import TopKClusterEval
-from .vcluster_pq_kde import VClusterPQKDE
-from .mq_beta_cluster import MQBetaCluster, MQBetaClusterOnly
-from .kmeans_cluster_only import KMeansClusterOnly
-from .pq_methods import (
-    VAttentionPQ,
-    IVFPQCluster,
-    FullAttentionPQ,
-)
-from .wildcat2 import WildCat2
-from .wildcat3 import WildCat3
-from .fcfw_l2 import FCFrankWolfeL2
-from .tensor_fcfw_l2 import TensorFCFWL2
-from .tensor_fcfw_lq import TensorFCFWLq
-from .learned import LearnedCoreset
-from .attention_matching import AttentionMatchingTopK
-from .h2o_eviction import H2OEviction
-from .snapkv_eviction import SnapKVEviction
-from .cake_eviction import CAKEEviction
-from .clusterkv import ClusterKVEviction
-from .vattn_favor_residual import VAttentionFavorResidual
-from .wildcat import WildcatKVCompression
-from .fw_herding import FWHerdingNystrom
 _OPTIONAL_MISSING = []
 
+
+# Core idealized methods
 try:
-    from .value_cluster_is import ValueClusterIS
-except ImportError:
-    ValueClusterIS = None
-    _OPTIONAL_MISSING.append("value_cluster_is")
-try:
-    from .tree_attention import TreeAttention
-except ImportError:
-    TreeAttention = None
-    _OPTIONAL_MISSING.append("tree_attention")
-try:
-    from .value_cluster_methods import (
-        VClusterMeanKey,
-        VClusterSampled,
-        VClusterTopK,
-        KClusterSampled,
-        VClusterLastKey,
-        VClusterMeanLogit,
-        KMeansKK,
+    from .idealized_methods import (
+        IdealTopK, IdealSamplingSubset, IdealSamplingIS,
+        VAttentionOracle, IdealEqualSplits, IdealEqualWeightSplits,
     )
 except ImportError:
-    VClusterMeanKey = None
-    VClusterSampled = None
-    VClusterTopK = None
-    KClusterSampled = None
-    VClusterLastKey = None
-    VClusterMeanLogit = None
-    KMeansKK = None
-    _OPTIONAL_MISSING.extend([
-        "vcluster_meankey",
-        "vcluster_sampled",
-        "vcluster_topk",
-        "kcluster_sampled",
-        "vcluster_lastkey",
-        "vcluster_meanlogit",
-        "kmeans_kk",
-    ])
+    _OPTIONAL_MISSING.append("idealized_methods")
+
+# Core algorithms used by the notebook
+try:
+    from .mq_beta_cluster import MQBetaCluster, MQBetaClusterOnly
+except ImportError:
+    _OPTIONAL_MISSING.append("mq_beta_cluster")
+
+try:
+    from .wildcat2 import WildCat2
+except ImportError:
+    _OPTIONAL_MISSING.append("wildcat2")
+
+try:
+    from .tensor_fcfw_lq import TensorFCFWLq
+except ImportError:
+    _OPTIONAL_MISSING.append("tensor_fcfw_lq")
+
+try:
+    from .learned import LearnedCoreset
+except ImportError:
+    _OPTIONAL_MISSING.append("learned")
+
+try:
+    from .kvsculpt import KVSculpt
+except ImportError:
+    _OPTIONAL_MISSING.append("kvsculpt")
+
+# All other algorithms — optional, fail silently
+_other_modules = [
+    ("multiq_grouping", "MultiQGrouping"),
+    ("kmeans_clustering", "KMeansClustering"),
+    ("lsh_crosspoly_multiprobe", "LSHCrossPolytope"),
+    ("lsh_cp_group", "LSHCPGroup"),
+    ("lsh_crosspoly_clustered", "LSHCrossPolytopeClustered"),
+    ("lsh_simhash_snis", "LSHSimHashSNIS"),
+    ("lsh_crosspoly_snis", "LSHCrossPolySNIS"),
+    ("kmeans_value_clustering", "KMeansValueClustering"),
+    ("cp_value_cluster", "CPValueCluster"),
+    ("kcluster_topk", "KClusterTopK"),
+    ("mq_cluster_topk", "MQClusterTopK"),
+    ("qclust_topk", "QClustTopK"),
+    ("qclust_augmented", "QClustAugTopK"),
+    ("twostage_cluster", "KeyClustValSub"),
+    ("topk_cluster_comparison", "TopKKeyClusters"),
+    ("topk_cluster_eval", "TopKClusterEval"),
+    ("vcluster_pq_kde", "VClusterPQKDE"),
+    ("kmeans_cluster_only", "KMeansClusterOnly"),
+    ("pq_methods", "VAttentionPQ"),
+    ("wildcat3", "WildCat3"),
+    ("fcfw_l2", "FCFrankWolfeL2"),
+    ("tensor_fcfw_l2", "TensorFCFWL2"),
+    ("attention_matching", "AttentionMatchingTopK"),
+    ("h2o_eviction", "H2OEviction"),
+    ("snapkv_eviction", "SnapKVEviction"),
+    ("cake_eviction", "CAKEEviction"),
+    ("clusterkv", "ClusterKVEviction"),
+    ("vattn_favor_residual", "VAttentionFavorResidual"),
+    ("wildcat", "WildcatKVCompression"),
+    ("fw_herding", "FWHerdingNystrom"),
+    ("value_cluster_is", "ValueClusterIS"),
+    ("value_cluster_methods", "VClusterMeanKey"),
+    ("tree_attention", "TreeAttention"),
+]
+
+for _mod, _cls in _other_modules:
+    try:
+        _m = __import__(f"src.algorithms.{_mod}", fromlist=[_cls])
+        globals()[_cls] = getattr(_m, _cls)
+    except (ImportError, AttributeError):
+        _OPTIONAL_MISSING.append(_mod)
 
 
 @dataclass
 class MethodSpec:
     cls: type
-    kind: str   # "idealized" or "algorithm"
+    kind: str
 
 
-METHOD_REGISTRY = {
-    "ideal_topk": MethodSpec(
-        IdealTopK, "idealized",
-    ),
-    "ideal_sampling_subset": MethodSpec(
-        IdealSamplingSubset, "idealized",
-    ),
-    "ideal_sampling_is": MethodSpec(
-        IdealSamplingIS, "idealized",
-    ),
-    "vattention_oracle": MethodSpec(
-        VAttentionOracle, "idealized",
-    ),
-    "ideal_equal_splits": MethodSpec(
-        IdealEqualSplits, "idealized",
-    ),
-    "ideal_equal_weight_splits": MethodSpec(
-        IdealEqualWeightSplits, "idealized",
-    ),
-    "multiq": MethodSpec(
-        MultiQGrouping, "algorithm",
-    ),
-    "kmeans": MethodSpec(
-        KMeansClustering, "algorithm",
-    ),
-    "lsh_crosspoly": MethodSpec(
-        LSHCrossPolytope, "algorithm",
-    ),
-    "lsh_cp_group": MethodSpec(
-        LSHCPGroup, "algorithm",
-    ),
-    "lsh_crosspoly_multiprobe": MethodSpec(
-        LSHCrossPolytope, "algorithm",
-    ),
-    "lsh_crosspoly_clustered": MethodSpec(
-        LSHCrossPolytopeClustered, "algorithm",
-    ),
-    "lsh_simhash_snis": MethodSpec(
-        LSHSimHashSNIS, "algorithm",
-    ),
-    "lsh_crosspoly_snis": MethodSpec(
-        LSHCrossPolySNIS, "algorithm",
-    ),
-    "kmeans_value": MethodSpec(
-        KMeansValueClustering, "algorithm",
-    ),
-    "kmeans_key": MethodSpec(
-        KMeansKeyClustering, "algorithm",
-    ),
-    "cp_value_cluster": MethodSpec(
-        CPValueCluster, "algorithm",
-    ),
-    "vattention_pq": MethodSpec(
-        VAttentionPQ, "algorithm",
-    ),
-    "ivfpq_cluster": MethodSpec(
-        IVFPQCluster, "algorithm",
-    ),
-    "fullattention_pq": MethodSpec(
-        FullAttentionPQ, "algorithm",
-    ),
-    "wildcat2": MethodSpec(
-        WildCat2, "algorithm",
-    ),
-    "wildcat3": MethodSpec(
-        WildCat3, "algorithm",
-    ),
-    "fc_frank_wolfe_l2": MethodSpec(
-        FCFrankWolfeL2, "algorithm",
-    ),
-    "tensor_fcfw_l2": MethodSpec(
-        TensorFCFWL2, "algorithm",
-    ),
-    "tensor_fcfw_lq": MethodSpec(
-        TensorFCFWLq, "algorithm",
-    ),
-    "learned": MethodSpec(
-        LearnedCoreset, "algorithm",
-    ),
-    "kcluster_topk": MethodSpec(
-        KClusterTopK, "algorithm",
-    ),
-    "oracle_cluster_pq_topk": MethodSpec(
-        OracleClusterPQTopK, "algorithm",
-    ),
-    "qclust_topk": MethodSpec(
-        QClustTopK, "algorithm",
-    ),
-    "qclust_aug_topk": MethodSpec(
-        QClustAugTopK, "algorithm",
-    ),
-    "keyclust_valsub": MethodSpec(
-        KeyClustValSub, "algorithm",
-    ),
-    "qclust_valsub": MethodSpec(
-        QClustValSub, "algorithm",
-    ),
-    "topk_key_clusters": MethodSpec(
-        TopKKeyClusters, "algorithm",
-    ),
-    "topk_oracle_clusters": MethodSpec(
-        TopKOracleClusters, "algorithm",
-    ),
-    "topk_value_clusters": MethodSpec(
-        TopKValueClusters, "algorithm",
-    ),
-    "topk_cluster_eval": MethodSpec(
-        TopKClusterEval, "algorithm",
-    ),
-    "mq_cluster_topk": MethodSpec(
-        MQClusterTopK, "algorithm",
-    ),
-    "oracle_topk_mq_cluster": MethodSpec(
-        OracleTopKMQCluster, "algorithm",
-    ),
-    "pq_topk_only": MethodSpec(
-        PQTopKOnly, "algorithm",
-    ),
-    "vcluster_pq_kde": MethodSpec(
-        VClusterPQKDE, "algorithm",
-    ),
-    "mq_cluster_truez": MethodSpec(
-        MQClusterTrueZ, "algorithm",
-    ),
-    "mq_cluster_pqz": MethodSpec(
-        MQClusterPQZ, "algorithm",
-    ),
-    "pq_full_attn": MethodSpec(
-        PQFullAttn, "algorithm",
-    ),
-    "mq_beta_cluster": MethodSpec(
-        MQBetaCluster, "algorithm",
-    ),
-    "kmeans_cluster_only": MethodSpec(
-        KMeansClusterOnly, "algorithm",
-    ),
-    "mq_beta_cluster_only": MethodSpec(
-        MQBetaClusterOnly, "algorithm",
-    ),
-    "attention_matching": MethodSpec(
-        AttentionMatchingTopK, "algorithm",
-    ),
-    "h2o": MethodSpec(
-        H2OEviction, "algorithm",
-    ),
-    "snapkv": MethodSpec(
-        SnapKVEviction, "algorithm",
-    ),
-    "cake": MethodSpec(
-        CAKEEviction, "algorithm",
-    ),
-    "clusterkv": MethodSpec(
-        ClusterKVEviction, "algorithm",
-    ),
-    "vattn_favor_residual": MethodSpec(
-        VAttentionFavorResidual, "algorithm",
-    ),
-    "wildcat": MethodSpec(
-        WildcatKVCompression, "algorithm",
-    ),
-    "fw_nystrom": MethodSpec(
-        FWHerdingNystrom, "algorithm",
-    ),
-    "fcfw": MethodSpec(
-        FWHerdingNystrom, "algorithm",
-    ),
-    "fcfw_keyxvalue": MethodSpec(
-        FWHerdingNystrom, "algorithm",
-    ),
-}
+def _build_registry():
+    registry = {}
+    _entries = [
+        ("ideal_topk", "IdealTopK", "idealized"),
+        ("ideal_sampling_is", "IdealSamplingIS", "idealized"),
+        ("vattention_oracle", "VAttentionOracle", "idealized"),
+        ("mq_beta_cluster", "MQBetaCluster", "algorithm"),
+        ("wildcat2", "WildCat2", "algorithm"),
+        ("tensor_fcfw_lq", "TensorFCFWLq", "algorithm"),
+        ("learned", "LearnedCoreset", "algorithm"),
+        ("kvsculpt", "KVSculpt", "algorithm"),
+    ]
+    for key, cls_name, kind in _entries:
+        cls = globals().get(cls_name)
+        if cls is not None:
+            registry[key] = MethodSpec(cls, kind)
+    return registry
 
-if ValueClusterIS is not None:
-    METHOD_REGISTRY["value_cluster_is"] = MethodSpec(
-        ValueClusterIS, "algorithm",
-    )
-if VClusterMeanKey is not None:
-    METHOD_REGISTRY["vcluster_meankey"] = MethodSpec(
-        VClusterMeanKey, "algorithm",
-    )
-if VClusterSampled is not None:
-    METHOD_REGISTRY["vcluster_sampled"] = MethodSpec(
-        VClusterSampled, "algorithm",
-    )
-if VClusterTopK is not None:
-    METHOD_REGISTRY["vcluster_topk"] = MethodSpec(
-        VClusterTopK, "algorithm",
-    )
-if KClusterSampled is not None:
-    METHOD_REGISTRY["kcluster_sampled"] = MethodSpec(
-        KClusterSampled, "algorithm",
-    )
-if VClusterLastKey is not None:
-    METHOD_REGISTRY["vcluster_lastkey"] = MethodSpec(
-        VClusterLastKey, "algorithm",
-    )
-if VClusterMeanLogit is not None:
-    METHOD_REGISTRY["vcluster_meanlogit"] = MethodSpec(
-        VClusterMeanLogit, "algorithm",
-    )
-if KMeansKK is not None:
-    METHOD_REGISTRY["kmeans_kk"] = MethodSpec(
-        KMeansKK, "algorithm",
-    )
-if TreeAttention is not None:
-    METHOD_REGISTRY["tree_attention"] = MethodSpec(
-        TreeAttention, "algorithm",
-    )
+
+METHOD_REGISTRY = _build_registry()
 
 if _OPTIONAL_MISSING:
-    missing = ", ".join(sorted(_OPTIONAL_MISSING))
+    missing = ", ".join(sorted(set(_OPTIONAL_MISSING)))
     warnings.warn(
-        "Optional algorithm modules unavailable; "
-        f"skipping registry entries: {missing}",
-        RuntimeWarning,
-        stacklevel=1,
+        f"Optional algorithm modules unavailable (OK for notebook): {missing}",
+        RuntimeWarning, stacklevel=1,
     )
