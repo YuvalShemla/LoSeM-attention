@@ -14,6 +14,7 @@ or random over candidates), not FCFW.
 
 from __future__ import annotations
 
+import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -23,11 +24,17 @@ from ..base import AttentionAlgorithm, AttentionInput, AttentionOutput
 from ...core import softmax
 from ..wildcat2._device import resolve_device
 from ..wildcat2.weighted_attention import weighted_attention
-from ..probe_queries import DEFAULT_N_TRAIN_QUERIES, n_train_queries_list
+from ..probe_queries import (
+    DEFAULT_N_SYNTHETIC,
+    DEFAULT_N_TRAIN_QUERIES,
+    DEFAULT_ROPE_THETA,
+    DEFAULT_TRAIN_Q_STRATEGY,
+    n_train_queries_list,
+    prepare_probe_queries,
+    validate_train_q_strategy,
+)
 from .learn_coreset import (
-    build_probe_queries,
     learn_kv_coreset,
-    reference_position,
 )
 
 
@@ -52,6 +59,9 @@ class LearnedCoreset(AttentionAlgorithm):
         exact_denominator: bool = True,
         n_sink: int = 1,
         local_window: int = 1024,
+        train_q_strategy: str = DEFAULT_TRAIN_Q_STRATEGY,
+        n_synthetic: int = DEFAULT_N_SYNTHETIC,
+        rope_theta: float = DEFAULT_ROPE_THETA,
         device: Optional[str] = None,
     ):
         self.n_train_queries = int(n_train_queries)
@@ -76,6 +86,9 @@ class LearnedCoreset(AttentionAlgorithm):
         self.exact_denominator = bool(exact_denominator)
         self.n_sink = int(n_sink)
         self.local_window = int(local_window)
+        self.train_q_strategy = validate_train_q_strategy(train_q_strategy)
+        self.n_synthetic = int(n_synthetic)
+        self.rope_theta = float(rope_theta)
         self._device = resolve_device(device)
 
         self._keys: Optional[np.ndarray] = None
@@ -104,6 +117,7 @@ class LearnedCoreset(AttentionAlgorithm):
         query_positions: Optional[List[int]] = None,
         seed: int = 42,
     ) -> None:
+        self.reset_method_timing()
         self._keys = keys
         self._values = values
         self._head_dim = head_dim
@@ -115,9 +129,17 @@ class LearnedCoreset(AttentionAlgorithm):
             self._ref_pos = None
             return
 
-        self._ref_pos = reference_position(len(queries), query_positions)
-        self._probe_queries = build_probe_queries(
-            queries, query_positions, self._ref_pos, self.n_train_queries,
+        self._ref_pos, self._probe_queries = prepare_probe_queries(
+            queries,
+            query_positions,
+            head_dim,
+            self.n_sink,
+            self.local_window,
+            self.train_q_strategy,
+            self.n_train_queries,
+            self.n_synthetic,
+            self.rope_theta,
+            self._seed,
         )
 
     def _frozen_for_budget(
@@ -143,6 +165,7 @@ class LearnedCoreset(AttentionAlgorithm):
             raise RuntimeError(
                 "prepare() received no queries; cannot learn coreset",
             )
+        t0 = time.perf_counter()
         k_prime, v_prime, w_prime = learn_kv_coreset(
             self._keys,
             self._values,
@@ -168,6 +191,7 @@ class LearnedCoreset(AttentionAlgorithm):
             device=self._device,
             seed=self._seed + budget,
         )
+        self.record_coreset_fit(budget, time.perf_counter() - t0)
         self._learned_cache[budget] = (k_prime, v_prime, w_prime)
         return k_prime, v_prime, w_prime
 
@@ -207,9 +231,6 @@ class LearnedCoreset(AttentionAlgorithm):
         w_prime = torch.as_tensor(
             w_prime_np, dtype=torch.float32, device=device,
         ).unsqueeze(0)
-        # Fold mass into the numerator (weighted_attention ignores core_one in the
-        # exact-denominator path); core_one carries it for the coreset-mass path.
-        v_prime_eff = v_prime * w_prime.unsqueeze(-1)
         actual_budget_pairs = int(k_prime.shape[1])
 
         keys_all = torch.as_tensor(
@@ -226,11 +247,11 @@ class LearnedCoreset(AttentionAlgorithm):
                 (1, n_sp), dtype=torch.float32, device=device,
             )
             core_keys = torch.cat([sp_keys, k_prime], dim=1)
-            core_values = torch.cat([sp_vals, v_prime_eff], dim=1)
+            core_values = torch.cat([sp_vals, v_prime], dim=1)
             core_one = torch.cat([sp_one, w_prime], dim=-1)
         else:
             core_keys = k_prime
-            core_values = v_prime_eff
+            core_values = v_prime
             core_one = w_prime
 
         q = torch.as_tensor(
@@ -286,6 +307,11 @@ class LearnedCoreset(AttentionAlgorithm):
                     exact_denominator=bool(cfg.get("exact_denominator", True)),
                     n_sink=int(cfg.get("n_sink", 1)),
                     local_window=int(cfg.get("local_window", 1024)),
+                    train_q_strategy=cfg.get(
+                        "train_q_strategy", DEFAULT_TRAIN_Q_STRATEGY,
+                    ),
+                    n_synthetic=int(cfg.get("n_synthetic", DEFAULT_N_SYNTHETIC)),
+                    rope_theta=float(cfg.get("rope_theta", DEFAULT_ROPE_THETA)),
                     device=cfg.get("device"),
                 ),
             )

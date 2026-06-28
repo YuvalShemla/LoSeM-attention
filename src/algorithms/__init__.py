@@ -49,6 +49,7 @@ from .fcfw_l2 import FCFrankWolfeL2
 from .tensor_fcfw_l2 import TensorFCFWL2
 from .tensor_fcfw_lq import TensorFCFWLq
 from .learned import LearnedCoreset
+from .kvsculpt import KVSculpt
 _OPTIONAL_MISSING = []
 
 try:
@@ -174,6 +175,9 @@ METHOD_REGISTRY = {
     ),
     "learned": MethodSpec(
         LearnedCoreset, "algorithm",
+    ),
+    "kvsculpt": MethodSpec(
+        KVSculpt, "algorithm",
     ),
     "kcluster_topk": MethodSpec(
         KClusterTopK, "algorithm",

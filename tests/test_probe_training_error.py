@@ -3,6 +3,7 @@
 import numpy as np
 
 from src.algorithms.learned import LearnedCoreset
+from src.algorithms.kvsculpt import KVSculpt
 from src.algorithms.tensor_fcfw_lq import TensorFCFWLq
 from src.evaluation.evaluator import (
     evaluate_probe_set_errors,
@@ -24,8 +25,10 @@ def _make_example(n=400, d=32, sink=2, window=32, seed=0):
 def test_is_probe_q_method():
     learned = LearnedCoreset(n_train_queries=16, n_steps=0, device="cpu")
     lq = TensorFCFWLq(n_train_queries=16, device="cpu")
+    kv = KVSculpt(n_train_queries=16, n_k_steps=0, device="cpu")
     assert is_probe_q_method(learned)
     assert is_probe_q_method(lq)
+    assert is_probe_q_method(kv)
 
 
 def test_evaluate_probe_set_errors_learned():
@@ -52,7 +55,7 @@ def test_evaluate_probe_set_errors_learned():
     )
     assert "Learned-random-8" in out
     assert "Learned-random-16" in out
-    assert out["Learned-random-8"]["n_probes"] == 24
+    assert out["Learned-random-8"]["n_probes"] == 23  # window 24, test at ref excluded
     assert np.isfinite(out["Learned-random-8"]["error"])
 
 
@@ -76,5 +79,5 @@ def test_evaluate_probe_set_errors_lq():
         local_window=window,
         rng=np.random.default_rng(0),
     )
-    assert "TFCFW-lq-8" in out
-    assert out["TFCFW-lq-8"]["n_probes"] == 20
+    assert "TFCFW-lq-fw-8" in out
+    assert out["TFCFW-lq-fw-8"]["n_probes"] == 19  # window 20, test at ref excluded

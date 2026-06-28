@@ -31,7 +31,9 @@ def weighted_attention(
         logits = all_logits.reshape(-1).to(dtype=qk.dtype, device=qk.device)
         max_l = logits.max()
         qk_exp = (qk - max_l).exp()
-        num = torch.einsum("...tr, ...rd -> ...td", qk_exp, core_values)
+        num = torch.einsum(
+            "...tr,...r,...rd->...td", qk_exp, core_one, core_values,
+        )
         z_exact = (logits - max_l).exp().sum()
         out = torch.where(
             z_exact > eps,
@@ -46,7 +48,9 @@ def weighted_attention(
 
         out = torch.where(
             qk1 > eps,
-            torch.einsum("...tr, ...rd -> ...td", qk, core_values) / qk1,
+            torch.einsum(
+                "...tr,...r,...rd->...td", qk, core_one, core_values,
+            ) / qk1,
             torch.zeros_like(qk1),
         )
     return out.clamp(min=min_val, max=max_val)

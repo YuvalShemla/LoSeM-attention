@@ -14,6 +14,15 @@ import numpy as np
 
 
 @dataclass
+class MethodTiming:
+    """Per-example timing accumulated between ``prepare()`` calls."""
+
+    fit_by_budget: Dict[int, float] = field(default_factory=dict)
+    inference_seconds: float = 0.0
+    inference_calls: int = 0
+
+
+@dataclass
 class AttentionInput:
     """Everything an algorithm needs for one query."""
     query: np.ndarray              # [head_dim]
@@ -54,6 +63,34 @@ class AttentionOutput:
 
 class AttentionAlgorithm(ABC):
     """Base class for all attention methods."""
+
+    def reset_method_timing(self) -> None:
+        """Clear per-example timing (call at the start of ``prepare()``)."""
+        self._method_timing = MethodTiming()
+
+    def record_coreset_fit(self, budget: int, seconds: float) -> None:
+        """Record one-time coreset / training cost for ``budget``."""
+        if not hasattr(self, "_method_timing"):
+            self.reset_method_timing()
+        if budget not in self._method_timing.fit_by_budget:
+            self._method_timing.fit_by_budget[budget] = float(seconds)
+
+    def record_inference_seconds(self, seconds: float) -> None:
+        """Accumulate ``run()`` wall time (including cached forwards)."""
+        if not hasattr(self, "_method_timing"):
+            self.reset_method_timing()
+        self._method_timing.inference_seconds += float(seconds)
+        self._method_timing.inference_calls += 1
+
+    def snapshot_method_timing(self) -> MethodTiming:
+        """Return timing accumulated since the last ``prepare()``."""
+        if not hasattr(self, "_method_timing"):
+            return MethodTiming()
+        return MethodTiming(
+            fit_by_budget=dict(self._method_timing.fit_by_budget),
+            inference_seconds=self._method_timing.inference_seconds,
+            inference_calls=self._method_timing.inference_calls,
+        )
 
     @property
     @abstractmethod

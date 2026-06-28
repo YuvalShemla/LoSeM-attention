@@ -22,6 +22,7 @@ causal for every query.
 
 from __future__ import annotations
 
+import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -31,8 +32,16 @@ from ..base import AttentionAlgorithm, AttentionInput, AttentionOutput
 from ...core import compute_special_indices, softmax
 from ..wildcat2._device import resolve_device
 from ..wildcat2.weighted_attention import weighted_attention
-from ..learned.learn_coreset import build_probe_queries, reference_position
-from ..probe_queries import DEFAULT_N_TRAIN_QUERIES, n_train_queries_int
+from ..probe_queries import (
+    DEFAULT_N_SYNTHETIC,
+    DEFAULT_N_TRAIN_QUERIES,
+    DEFAULT_ROPE_THETA,
+    DEFAULT_TRAIN_Q_STRATEGY,
+    n_train_queries_int,
+    prepare_probe_queries,
+    validate_train_q_strategy,
+)
+from .lbfgs_refine import refine_coreset_lbfgs
 from .select_lq import select_lq_coreset
 
 
@@ -45,21 +54,52 @@ class TensorFCFWLq(AttentionAlgorithm):
         oracle: str = "fw",
         irls_iters: int = 5,
         rcond: float = 1e-3,
-        exact_denominator: bool = False,
+        exact_denominator: bool = True,
         n_sink: int = 1,
         local_window: int = 1024,
+        train_q_strategy: str = DEFAULT_TRAIN_Q_STRATEGY,
+        n_synthetic: int = DEFAULT_N_SYNTHETIC,
+        rope_theta: float = DEFAULT_ROPE_THETA,
         device: Optional[str] = None,
+        show_progress: Optional[bool] = None,
+        scoring_irls_iters: Optional[int] = None,
+        correction_irls_iters: Optional[int] = None,
+        correction_period: int = 400,
+        lbfgs_steps: int = 0,
+        lbfgs_lr: float = 0.5,
+        lbfgs_inner_iter: int = 10,
     ):
-        if oracle not in ("fw", "omp"):
-            raise ValueError(f"oracle must be 'fw' or 'omp'; got {oracle!r}")
+        if oracle not in ("fw", "omp", "fc_lq", "residual_lq", "residual_lq_deflated"):
+            raise ValueError(
+                f"oracle must be 'fw', 'omp', 'fc_lq', 'residual_lq', or "
+                f"'residual_lq_deflated'; got {oracle!r}",
+            )
         self.n_train_queries = int(n_train_queries)
         self.oracle = oracle
         self.irls_iters = int(irls_iters)
+        self.scoring_irls_iters = (
+            int(scoring_irls_iters)
+            if scoring_irls_iters is not None
+            else self.irls_iters
+        )
+        self.correction_irls_iters = (
+            int(correction_irls_iters)
+            if correction_irls_iters is not None
+            else self.irls_iters
+        )
+        self.correction_period = int(correction_period)
+        self.lbfgs_steps = max(int(lbfgs_steps), 0)
+        self.lbfgs_lr = float(lbfgs_lr)
+        self.lbfgs_inner_iter = int(lbfgs_inner_iter)
         self.rcond = float(rcond)
         self.exact_denominator = bool(exact_denominator)
         self.n_sink = int(n_sink)
         self.local_window = int(local_window)
+        self.train_q_strategy = validate_train_q_strategy(train_q_strategy)
+        self.n_synthetic = int(n_synthetic)
+        self.rope_theta = float(rope_theta)
         self._device = resolve_device(device)
+        self.show_progress = show_progress
 
         self._keys: Optional[np.ndarray] = None
         self._values: Optional[np.ndarray] = None
@@ -75,7 +115,7 @@ class TensorFCFWLq(AttentionAlgorithm):
 
     @property
     def name(self) -> str:
-        return "TFCFW-lq"
+        return f"TFCFW-lq-{self.oracle}"
 
     @property
     def sweeps_budget(self) -> bool:
@@ -90,6 +130,7 @@ class TensorFCFWLq(AttentionAlgorithm):
         query_positions: Optional[List[int]] = None,
         seed: int = 42,
     ) -> None:
+        self.reset_method_timing()
         self._keys = keys
         self._values = values
         self._head_dim = head_dim
@@ -102,9 +143,17 @@ class TensorFCFWLq(AttentionAlgorithm):
             self._ref_pos = None
             return
 
-        self._ref_pos = reference_position(len(queries), query_positions)
-        self._probe_queries = build_probe_queries(
-            queries, query_positions, self._ref_pos, self.n_train_queries,
+        self._ref_pos, self._probe_queries = prepare_probe_queries(
+            queries,
+            query_positions,
+            head_dim,
+            self.n_sink,
+            self.local_window,
+            self.train_q_strategy,
+            self.n_train_queries,
+            self.n_synthetic,
+            self.rope_theta,
+            self._seed,
         )
 
     def _get_coreset(
@@ -124,6 +173,7 @@ class TensorFCFWLq(AttentionAlgorithm):
         if self._ref_pos is None:
             raise RuntimeError("reference position not set in prepare()")
 
+        t0 = time.perf_counter()
         keys = self._keys
         values = self._values
         head_dim = self._head_dim
@@ -132,7 +182,7 @@ class TensorFCFWLq(AttentionAlgorithm):
         scale = 1.0 / np.sqrt(head_dim)
 
         n_causal = ref_pos + 1
-        _, cand_idx = compute_special_indices(
+        sp_idx, cand_idx = compute_special_indices(
             n_causal, self.n_sink, self.local_window,
         )
         if len(cand_idx) == 0:
@@ -142,6 +192,7 @@ class TensorFCFWLq(AttentionAlgorithm):
                 np.zeros(0, dtype=np.float32),
                 np.zeros(0, dtype=np.int64),
             )
+            self.record_coreset_fit(budget, time.perf_counter() - t0)
             self._coreset_cache[budget] = empty
             return empty
 
@@ -154,6 +205,15 @@ class TensorFCFWLq(AttentionAlgorithm):
         probes = torch.as_tensor(
             self._probe_queries, dtype=torch.float32, device=device,
         )
+        ref_keys = ref_vals = sp_t = None
+        if self.exact_denominator:
+            ref_keys = torch.as_tensor(
+                keys[:n_causal], dtype=torch.float32, device=device,
+            )
+            ref_vals = torch.as_tensor(
+                values[:n_causal], dtype=torch.float32, device=device,
+            )
+            sp_t = torch.as_tensor(sp_idx, dtype=torch.long, device=device)
 
         core_local, cmpd_values, w, new_state = select_lq_coreset(
             probes,
@@ -165,6 +225,14 @@ class TensorFCFWLq(AttentionAlgorithm):
             irls_iters=self.irls_iters,
             rcond=self.rcond,
             state=self._select_state,
+            numerator_only=self.exact_denominator,
+            ref_keys=ref_keys,
+            ref_values=ref_vals,
+            sp_idx=sp_t,
+            show_progress=self.show_progress,
+            scoring_irls_iters=self.scoring_irls_iters,
+            correction_irls_iters=self.correction_irls_iters,
+            correction_period=self.correction_period,
         )
         self._select_state = new_state
 
@@ -174,6 +242,36 @@ class TensorFCFWLq(AttentionAlgorithm):
         w_np = w.cpu().numpy().astype(np.float32)
         global_idx = cand_idx[core_local_np].astype(np.int64)
 
+        if self.lbfgs_steps > 0 and k_core.shape[0] > 0:
+            keys_ref_t = torch.as_tensor(
+                keys[:n_causal], dtype=torch.float32, device=device,
+            )
+            values_ref_t = torch.as_tensor(
+                values[:n_causal], dtype=torch.float32, device=device,
+            )
+            sp_t = torch.as_tensor(sp_idx, dtype=torch.long, device=device)
+            k_t = torch.as_tensor(k_core, dtype=torch.float32, device=device)
+            v_t = torch.as_tensor(v_core, dtype=torch.float32, device=device)
+            w_t = torch.as_tensor(w_np, dtype=torch.float32, device=device)
+            k_t, v_t, w_t = refine_coreset_lbfgs(
+                k_t,
+                v_t,
+                w_t,
+                probes,
+                keys_ref_t,
+                values_ref_t,
+                sp_t,
+                scale,
+                n_steps=self.lbfgs_steps,
+                lbfgs_lr=self.lbfgs_lr,
+                lbfgs_inner_iter=self.lbfgs_inner_iter,
+                seed=self._seed + budget,
+            )
+            k_core = k_t.cpu().numpy().astype(np.float32)
+            v_core = v_t.cpu().numpy().astype(np.float32)
+            w_np = w_t.cpu().numpy().astype(np.float32)
+
+        self.record_coreset_fit(budget, time.perf_counter() - t0)
         self._coreset_cache[budget] = (k_core, v_core, w_np, global_idx)
         return k_core, v_core, w_np, global_idx
 
@@ -287,9 +385,21 @@ class TensorFCFWLq(AttentionAlgorithm):
                 oracle=cfg.get("oracle", "fw"),
                 irls_iters=int(cfg.get("irls_iters", 5)),
                 rcond=float(cfg.get("rcond", 1e-3)),
-                exact_denominator=bool(cfg.get("exact_denominator", False)),
+                exact_denominator=bool(cfg.get("exact_denominator", True)),
                 n_sink=int(cfg.get("n_sink", 1)),
                 local_window=int(cfg.get("local_window", 1024)),
+                train_q_strategy=cfg.get(
+                    "train_q_strategy", DEFAULT_TRAIN_Q_STRATEGY,
+                ),
+                n_synthetic=int(cfg.get("n_synthetic", DEFAULT_N_SYNTHETIC)),
+                rope_theta=float(cfg.get("rope_theta", DEFAULT_ROPE_THETA)),
                 device=cfg.get("device"),
+                show_progress=cfg.get("show_progress"),
+                scoring_irls_iters=cfg.get("scoring_irls_iters"),
+                correction_irls_iters=cfg.get("correction_irls_iters"),
+                correction_period=int(cfg.get("correction_period", 400)),
+                lbfgs_steps=int(cfg.get("lbfgs_steps", 0)),
+                lbfgs_lr=float(cfg.get("lbfgs_lr", 0.5)),
+                lbfgs_inner_iter=int(cfg.get("lbfgs_inner_iter", 10)),
             ),
         ]

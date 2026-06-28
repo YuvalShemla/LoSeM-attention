@@ -31,11 +31,17 @@ evaluation:
   seed: 42
   n_queries: 1
   n_examples: 1
-  n_train_queries: 10000   # |Q| for learned / TFCFW-lq; should exceed max budget
+  n_train_queries: 5000   # |Q| trailing-window size when train_q_strategy=trailing
+  train_q_strategy: kvsculpt   # trailing | kvsculpt — shared by learned / TFCFW-lq / kvsculpt
+  n_synthetic: 1000            # synthetic future queries when train_q_strategy=kvsculpt
+  rope_theta: 500000.0          # RoPE theta for kvsculpt-type query construction
+  exact_denominator: true       # shared by learned / TFCFW-lq / kvsculpt
+  device: cuda                  # shared by all torch algorithms (wildcat2/3, FCFW, TFCFW, learned, kvsculpt)
   use_rope: true
   normalize_keys_to_median_norm: false
   normalize_queries_to_median_norm: false
   compute_statistics: false
+  measure_timing: true
   compute_group_cosine_distribution: false
   group_cosine_distribution_bins: 50
   center_candidate_keys_for_pi_plot: true
@@ -59,7 +65,7 @@ evaluation:
 #    - 512
     - 1024
     - 2048
-    - 4096
+#    - 4096
 #    - 8192
 #    - 16384
 #    - 32768
@@ -211,7 +217,7 @@ algorithm_configs:
   wildcat2:
     # Coreset budget: evaluation.budget_sweep.absolute (per candidate region).
     # Sink + local window: evaluation.exclude_sink_token, local_window.size.
-    # device: null   # null = CUDA if available, else CPU; or "cuda" / "cpu"
+    # device: from evaluation.device (or override here)
     num_bins: 1
     q_scale_mode: key_max   # match examples/kvcache/measure_attention_error.py (max key norm)
     exact_denominator: false   # normalize by exact causal KDE Z_exact, not coreset KDE
@@ -224,7 +230,7 @@ algorithm_configs:
     # num_bins=1 makes the compressed middle coreset size equal to budget.
     num_bins: 1
     dtype: float32
-    # device: null   # null = CUDA if available, else CPU; or "cuda" / "cpu"
+    # device: from evaluation.device (or override here)
     # bin_r: null    # optional alternative to num_bins, original press-style
   fc_frank_wolfe_l2:
     # Fully-corrective Frank-Wolfe coreset selection in Gaussian kernel space.
@@ -236,7 +242,7 @@ algorithm_configs:
     exact_denominator: false   # normalize by exact causal KDE Z_exact, not coreset KDE
     # bin_r: null           # optional per-bin coreset size
     # phi: null             # kernel temperature adjustment
-    # device: null          # null = CUDA if available, else CPU; or cuda / cpu
+    # device: from evaluation.device (or override here)
   tensor_fcfw_l2:
     # Value-aware tensor FCFW: approximates sum_i phi(k_i) (x) [1, v_i] instead
     # of sum_i phi(k_i). Coreset keys are existing keys; coreset value vectors
@@ -244,11 +250,11 @@ algorithm_configs:
     # temperature / WtdAttn as wildcat2. Deterministic and nested.
     num_bins: 1
     q_scale_mode: key_max   # match wildcat2 (max key norm); or query
-    oracle: fw              # fw = argmax ||G[i,:]||^2; or omp
+    oracle: fc_lq              # fw = argmax ||G[i,:]||^2; or omp
     exact_denominator: false   # normalize by exact causal KDE Z_exact, not coreset KDE
     # bin_r: null
     # phi: null
-    # device: null
+    # device: from evaluation.device (or override here)
   tensor_fcfw_lq:
     # Tensor FCFW under the query-weighted lq norm. Instead of the RKHS-l2
     # (Frobenius) error of sum_i phi(k_i) (x) [1, v_i], it minimizes
@@ -259,13 +265,23 @@ algorithm_configs:
     # exp(scale q.k_i)); correction = IRLS for the L_{2,1} solve. No temperature
     # rescaling / centering (uses the real attention kernel over Q).
     # Probe set Q: evaluation.n_train_queries (shared with learned).
-    oracle: fw              # fw = argmax ||G[i,:]||^2; or omp
-    irls_iters: 5           # IRLS reweighting steps for the lq solve (<=1 => L2)
+    # Selection: fw/omp = fast Cholesky surrogate; fc_lq = exact FC-lq;
+    # residual_lq = one-column lq residual scoring + scheduled refresh;
+    # residual_lq_deflated = residual_lq with QR-deflated candidate columns.
+    oracle: omp        # fw | omp | fc_lq | residual_lq | residual_lq_deflated
+    irls_iters: 5              # final lq solve on the selected support
+    scoring_irls_iters: 5      # residual_lq: IRLS steps for candidate scoring
+    correction_irls_iters: 5  # residual_lq: IRLS steps on scheduled refresh steps
+    correction_period: 0   # refresh every ceil(|S|/period) keys; 0 => every key
+    lbfgs_steps: 100         # KVSculpt-style post-refinement (0 => off)
+    lbfgs_lr: 0.5
+    lbfgs_inner_iter: 10
     rcond: 1.0e-3           # relative SVD cutoff for the value solve (safety when |Q| ~ budget)
-    exact_denominator: false   # normalize by exact causal KDE Z_exact, not coreset KDE
     n_sink: 1                 # match evaluation.exclude_sink_token
     local_window: 1024        # match evaluation.local_window.size
-    # device: null
+    show_progress: true      # null => on when stderr is a TTY; true/false to force
+    # exact_denominator: from evaluation.exact_denominator
+    # device: from evaluation.device (or override here)
   learned:
     # Gradient-descent synthetic (K', V', w') for the residual (candidate) region.
     # Training matches the exact eval pipeline (exact sink + local window + learned
@@ -275,23 +291,36 @@ algorithm_configs:
     # Pure init (k-means or random over candidates), not FCFW. Nested/monotone
     # budget sweep: larger budgets freeze the smaller trained coreset and train
     # only the new pairs (so error is non-increasing in budget).
-    # Probe set Q: evaluation.n_train_queries (shared with TFCFW-lq).
+    # Probe / training set Q: evaluation.train_q_strategy (trailing | kvsculpt).
     init: kmeans              # kmeans | random
     lr: 0.05
     n_steps: 500
     batch_size: 128
     loss: relative_l2         # relative_l2 | mse
-    rel_l2_floor: 0.01        # floor the relative-L2 denominator (stabilizes high-entropy heads)
+    rel_l2_floor: 0.001        # floor the relative-L2 denominator (stabilizes high-entropy heads)
     val_fraction: 0.1
     early_stop_patience: 50
     lr_decay_step: 200
     lr_decay_gamma: 0.5
     nested_budget: true       # monotone: freeze smaller coreset, train only new pairs
     kmeans_subsample: 8192    # cap candidates used for k-means init
-    exact_denominator: false   # false: coreset KDE denominator (matches WtdAttn eval)
     n_sink: 1                 # match evaluation.exclude_sink_token
     local_window: 1024        # match evaluation.local_window.size
-    # device: null
+    # exact_denominator: from evaluation.exact_denominator
+    # device: from evaluation.device (or override here)
+  kvsculpt:
+    # Distill candidate region into unconstrained (K_c, V_c) via L-BFGS + ridge V-solve.
+    # Training queries = retain-zone probes + synthetic future queries (De-RoPE).
+    # Loss = output MSE + log-sum-exp matching vs full-cache attention.
+    n_k_steps: 100
+    v_solve_every: 5
+    lbfgs_lr: 0.5
+    lbfgs_inner_iter: 10
+    ridge_lambda: 1.0e-3
+    n_sink: 1
+    local_window: 1024
+    # n_synthetic / rope_theta / exact_denominator: from evaluation.*
+    # device: from evaluation.device (or override here)
   kmeans_kk: {}
   tree_attention:
     starting_depths:
@@ -461,6 +490,10 @@ plotting:
       topk: '#1565c0'
       hybrid: '#1565c0'
       marker: v
+    kvsculpt:
+      topk: '#6a1b9a'
+      hybrid: '#6a1b9a'
+      marker: D
     kmeans_kk:
       topk: '#ff7f0e'
       hybrid: '#ff7f0e'

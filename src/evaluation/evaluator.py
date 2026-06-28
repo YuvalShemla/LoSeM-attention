@@ -5,6 +5,7 @@ Separated from run_evaluation.py to keep each file focused.
 """
 
 import re
+import time
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
@@ -20,7 +21,19 @@ def is_probe_q_method(method) -> bool:
     return method.__class__.__name__ in (
         "LearnedCoreset",
         "TensorFCFWLq",
+        "KVSculpt",
     )
+
+
+def _timed_method_run(method, problem, budget, rng):
+    """Run a method and optionally record wall time on the instance."""
+    t0 = time.perf_counter()
+    out = method.run(problem, budget, rng)
+    elapsed = time.perf_counter() - t0
+    record = getattr(method, "record_inference_seconds", None)
+    if record is not None:
+        record(elapsed)
+    return out, elapsed
 
 
 def evaluate_probe_set_errors(
@@ -32,6 +45,7 @@ def evaluate_probe_set_errors(
     n_sink: int,
     local_window: int,
     rng: np.random.Generator,
+    measure_timing: bool = False,
 ) -> Dict:
     """
     Mean probe rel-L2 per budget, using the same forward as ``method.run()``.
@@ -72,7 +86,10 @@ def evaluate_probe_set_errors(
                 special_idx=sp_idx,
                 candidate_idx=cand_idx,
             )
-            out = method.run(problem, b, rng)
+            if measure_timing:
+                out, _ = _timed_method_run(method, problem, b, rng)
+            else:
+                out = method.run(problem, b, rng)
             errs.append(relative_l2_error(out.output, full_out))
             actual_budget = out.actual_budget
         key = f"{method.name}-{b}"
@@ -98,6 +115,7 @@ def evaluate_query(
     rng: np.random.Generator,
     compute_statistics: bool = False,
     compute_group_cosine_distribution: bool = False,
+    measure_timing: bool = False,
 ) -> Dict:
     """Evaluate one query across all methods."""
     n_causal = len(keys)
@@ -122,7 +140,14 @@ def evaluate_query(
     for m in methods:
         if m.sweeps_budget:
             for b in budgets:
-                out = m.run(problem, b, rng)
+                if measure_timing:
+                    out, run_seconds = _timed_method_run(
+                        m, problem, b, rng,
+                    )
+                else:
+                    t0 = 0.0
+                    out = m.run(problem, b, rng)
+                    run_seconds = None
                 err = relative_l2_error(
                     out.output, full_out,
                 )
@@ -132,6 +157,8 @@ def evaluate_query(
                     "budget": out.actual_budget,
                     "requested_budget": int(b),
                 }
+                if measure_timing:
+                    results[k]["run_seconds"] = run_seconds
                 if out.debug_payload is not None:
                     results[k]["debug_payload"] = out.debug_payload
                 if compute_group_cosine_distribution:
@@ -159,7 +186,13 @@ def evaluate_query(
                             results[gc_key] = {}
                         results[gc_key][k] = gc
         else:
-            out = m.run(problem, 0, rng)
+            if measure_timing:
+                out, run_seconds = _timed_method_run(
+                    m, problem, 0, rng,
+                )
+            else:
+                out = m.run(problem, 0, rng)
+                run_seconds = None
             err = relative_l2_error(
                 out.output, full_out,
             )
@@ -168,6 +201,8 @@ def evaluate_query(
                 "budget": out.actual_budget,
                 "requested_budget": 0,
             }
+            if measure_timing:
+                results[m.name]["run_seconds"] = run_seconds
             if out.debug_payload is not None:
                 results[m.name]["debug_payload"] = out.debug_payload
             if compute_group_cosine_distribution:
@@ -560,6 +595,14 @@ def aggregate_results(all_results: List[Dict]) -> Dict:
             "budget_std": float(np.std(budgets)),
             "n_queries": len(entries),
         }
+        run_times = [
+            e["run_seconds"] for e in entries
+            if "run_seconds" in e
+        ]
+        if run_times:
+            agg[key]["run_seconds_mean"] = float(np.mean(run_times))
+            agg[key]["run_seconds_std"] = float(np.std(run_times))
+            agg[key]["run_seconds_total"] = float(np.sum(run_times))
         probe_stds = [
             e["probe_error_std"] for e in entries
             if "probe_error_std" in e
@@ -572,6 +615,230 @@ def aggregate_results(all_results: List[Dict]) -> Dict:
         if n_probes:
             agg[key]["n_probes"] = int(n_probes[0])
     return agg
+
+
+def aggregate_prepare_timings(
+    prepare_records: List[Dict],
+) -> Dict:
+    """Mean/std prepare wall time per method (one call per example)."""
+    by_method: Dict[str, List[float]] = {}
+    for rec in prepare_records:
+        by_method.setdefault(rec["method"], []).append(
+            float(rec["prepare_seconds"]),
+        )
+
+    agg = {}
+    for method, times in sorted(by_method.items()):
+        agg[method] = {
+            "prepare_seconds_mean": float(np.mean(times)),
+            "prepare_seconds_std": float(np.std(times)),
+            "prepare_seconds_total": float(np.sum(times)),
+            "n_examples": len(times),
+        }
+    return agg
+
+
+def aggregate_fit_timings(fit_records: List[Dict]) -> Dict:
+    """Mean/std coreset-fit time per method-budget key."""
+    by_key: Dict[str, List[float]] = {}
+    for rec in fit_records:
+        key = f"{rec['method']}-{rec['budget']}"
+        by_key.setdefault(key, []).append(float(rec["fit_seconds"]))
+
+    agg = {}
+    for key, times in sorted(by_key.items()):
+        agg[key] = {
+            "fit_seconds_mean": float(np.mean(times)),
+            "fit_seconds_std": float(np.std(times)),
+            "fit_seconds_total": float(np.sum(times)),
+            "n_examples": len(times),
+        }
+    return agg
+
+
+def aggregate_probe_eval_timings(
+    probe_eval_records: List[Dict],
+) -> Dict:
+    """Total probe-set eval wall time per method."""
+    by_method: Dict[str, List[float]] = {}
+    for rec in probe_eval_records:
+        by_method.setdefault(rec["method"], []).append(
+            float(rec["probe_eval_seconds"]),
+        )
+
+    agg = {}
+    for method, times in sorted(by_method.items()):
+        agg[method] = {
+            "probe_eval_seconds_mean": float(np.mean(times)),
+            "probe_eval_seconds_std": float(np.std(times)),
+            "probe_eval_seconds_total": float(np.sum(times)),
+            "n_examples": len(times),
+        }
+    return agg
+
+
+def aggregate_inference_timings(
+    inference_records: List[Dict],
+) -> Dict:
+    """Aggregate ``run()`` wall time per method (all calls since prepare)."""
+    by_method: Dict[str, Dict[str, float]] = {}
+    for rec in inference_records:
+        method = rec["method"]
+        entry = by_method.setdefault(method, {
+            "inference_seconds_total": 0.0,
+            "inference_calls": 0,
+            "n_examples": 0,
+        })
+        entry["inference_seconds_total"] += float(
+            rec["inference_seconds"],
+        )
+        entry["inference_calls"] += int(rec["inference_calls"])
+        entry["n_examples"] += 1
+
+    agg = {}
+    for method, entry in sorted(by_method.items()):
+        n_ex = entry["n_examples"]
+        total = entry["inference_seconds_total"]
+        calls = entry["inference_calls"]
+        agg[method] = {
+            "inference_seconds_total": total,
+            "inference_seconds_mean_per_example": (
+                total / n_ex if n_ex else 0.0
+            ),
+            "inference_calls": calls,
+            "inference_seconds_mean_per_call": (
+                total / calls if calls else 0.0
+            ),
+            "n_examples": n_ex,
+        }
+    return agg
+
+
+def _fmt_duration(seconds: float) -> str:
+    if seconds >= 3600:
+        return f"{seconds / 3600:.2f}h"
+    if seconds >= 60:
+        return f"{seconds / 60:.1f}m"
+    if seconds >= 1:
+        return f"{seconds:.2f}s"
+    return f"{seconds * 1e3:.2f}ms"
+
+
+def format_timing_summary(
+    prepare_agg: Dict,
+    run_agg: Dict,
+    *,
+    fit_agg: Optional[Dict] = None,
+    probe_eval_agg: Optional[Dict] = None,
+    inference_agg: Optional[Dict] = None,
+    algorithm_only: bool = False,
+    method_kinds: Optional[Dict[str, str]] = None,
+) -> str:
+    """Human-readable timing table for logs."""
+    method_kinds = method_kinds or {}
+    fit_agg = fit_agg or {}
+    probe_eval_agg = probe_eval_agg or {}
+    inference_agg = inference_agg or {}
+    lines = ["Timing summary:"]
+
+    prep_rows = []
+    for method, stats in sorted(prepare_agg.items()):
+        if algorithm_only and method_kinds.get(method) != "algorithm":
+            continue
+        mean_s = stats["prepare_seconds_mean"]
+        std_s = stats["prepare_seconds_std"]
+        n_ex = stats["n_examples"]
+        prep_rows.append(
+            f"  setup    {method}: "
+            f"{_fmt_duration(mean_s)} ± {_fmt_duration(std_s)} "
+            f"(n={n_ex} examples, "
+            f"total={_fmt_duration(stats['prepare_seconds_total'])})"
+        )
+    if prep_rows:
+        lines.append(
+            "  Setup prepare() [probe Q construction + cache reset]:",
+        )
+        lines.extend(prep_rows)
+
+    fit_rows = []
+    for key, stats in sorted(fit_agg.items()):
+        mname = key.rsplit("-", 1)[0]
+        if algorithm_only and method_kinds.get(mname) != "algorithm":
+            continue
+        mean_s = stats["fit_seconds_mean"]
+        std_s = stats["fit_seconds_std"]
+        n_ex = stats["n_examples"]
+        fit_rows.append(
+            f"  fit      {key}: "
+            f"{_fmt_duration(mean_s)} ± {_fmt_duration(std_s)} "
+            f"(n={n_ex} examples, "
+            f"total={_fmt_duration(stats['fit_seconds_total'])})"
+        )
+    if fit_rows:
+        lines.append(
+            "  Coreset fit / training (first run per budget, per example):",
+        )
+        lines.extend(fit_rows)
+
+    probe_rows = []
+    for method, stats in sorted(probe_eval_agg.items()):
+        if algorithm_only and method_kinds.get(method) != "algorithm":
+            continue
+        mean_s = stats["probe_eval_seconds_mean"]
+        std_s = stats["probe_eval_seconds_std"]
+        n_ex = stats["n_examples"]
+        probe_rows.append(
+            f"  probes   {method}: "
+            f"{_fmt_duration(mean_s)} ± {_fmt_duration(std_s)} "
+            f"per example (n={n_ex}, "
+            f"total={_fmt_duration(stats['probe_eval_seconds_total'])})"
+        )
+    if probe_rows:
+        lines.append(
+            "  Probe-set eval (|Q| forward passes × budgets):",
+        )
+        lines.extend(probe_rows)
+
+    inf_rows = []
+    for method, stats in sorted(inference_agg.items()):
+        if algorithm_only and method_kinds.get(method) != "algorithm":
+            continue
+        total = stats["inference_seconds_total"]
+        calls = stats["inference_calls"]
+        per_call = stats["inference_seconds_mean_per_call"]
+        inf_rows.append(
+            f"  infer    {method}: "
+            f"{_fmt_duration(total)} total over {calls} run() calls "
+            f"({_fmt_duration(per_call)}/call)"
+        )
+    if inf_rows:
+        lines.append(
+            "  All run() calls since prepare (fit + cached forwards):",
+        )
+        lines.extend(inf_rows)
+
+    run_rows = []
+    for key, stats in sorted(run_agg.items()):
+        if "run_seconds_mean" not in stats:
+            continue
+        mname = key.rsplit("-", 1)[0]
+        if algorithm_only and method_kinds.get(mname) != "algorithm":
+            continue
+        mean_s = stats["run_seconds_mean"]
+        std_s = stats["run_seconds_std"]
+        n_q = stats["n_queries"]
+        run_rows.append(
+            f"  test     {key}: "
+            f"{_fmt_duration(mean_s)} ± {_fmt_duration(std_s)} "
+            f"(n={n_q} test queries)"
+        )
+    if run_rows:
+        lines.append("  Test-query run() only (after probe eval warms cache):")
+        lines.extend(run_rows)
+
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
 
 
 PERCENTILE_WEIGHTS = {0: 1, 25: 2, 50: 3, 75: 2, 100: 1}
@@ -635,6 +902,25 @@ def weighted_aggregate_heads(
             "n_queries": n_total,
             "weighting": "percentile_triangular",
         }
+        run_present = [
+            (e, w) for e, w in present
+            if "run_seconds_mean" in e
+        ]
+        if run_present:
+            w_run = sum(w for _, w in run_present)
+            result[key]["run_seconds_mean"] = float(sum(
+                e["run_seconds_mean"] * w for e, w in run_present
+            ) / w_run)
+            result[key]["run_seconds_std"] = float(sum(
+                e["run_seconds_std"] * w for e, w in run_present
+            ) / w_run)
+            result[key]["run_seconds_total"] = float(sum(
+                e.get(
+                    "run_seconds_total",
+                    e["run_seconds_mean"] * e["n_queries"],
+                )
+                for e, _ in run_present
+            ))
     return result
 
 

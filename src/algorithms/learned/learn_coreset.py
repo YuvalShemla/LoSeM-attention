@@ -466,11 +466,6 @@ def build_probe_queries(
     ref_pos: int,
     n_train_queries: int,
 ) -> np.ndarray:
-    """Context queries nearest the reference position (excluding test queries)."""
-    test_set = set(int(p) for p in query_positions) if query_positions else set()
-    context_pos = [p for p in range(ref_pos + 1) if p not in test_set]
-    if n_train_queries < len(context_pos):
-        context_pos = context_pos[-n_train_queries:]
-    if not context_pos:
-        return np.zeros((0, queries.shape[1]), dtype=np.float32)
-    return queries[context_pos].astype(np.float32)
+    """Re-exported from ``probe_queries`` for backward compatibility."""
+    from ..probe_queries import build_probe_queries as _build
+    return _build(queries, query_positions, ref_pos, n_train_queries)

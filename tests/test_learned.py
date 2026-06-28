@@ -55,8 +55,23 @@ def test_train_excludes_test_queries():
     )
     for excluded in (q[98], q[99]):
         assert not np.any(np.all(probes == excluded, axis=1))
-    # Probes are the most recent positions before the test query.
-    assert probes.shape[0] == 10
+    # Trailing window positions 90..99 minus tests -> 90..97
+    expected = [p for p in range(90, 100) if p not in (98, 99)]
+    assert probes.shape[0] == len(expected)
+    for i, p in enumerate(expected):
+        assert np.all(probes[i] == q[p])
+
+
+def test_probe_queries_use_latest_window_not_prefix_start():
+    q = np.arange(200 * 4, dtype=np.float32).reshape(200, 4)
+    probes = build_probe_queries(
+        queries=q, query_positions=[199], ref_pos=199, n_train_queries=10,
+    )
+    # Window 190..199, test at 199 -> rows 190..198
+    assert probes.shape[0] == 9
+    assert np.all(probes[0] == q[190])
+    assert np.all(probes[-1] == q[198])
+    assert not np.any(np.all(probes == q[0], axis=1))
 
 
 def test_reference_position():
@@ -188,8 +203,7 @@ def test_training_forward_matches_weighted_attention():
     sp_vals = values_ref[sp_idx].unsqueeze(0)
     sp_one = torch.ones((1, len(sp_idx)), dtype=torch.float32, device=device)
     core_keys = torch.cat([sp_keys, k_new.unsqueeze(0)], dim=1)
-    v_eff = v_new * log_w.exp().unsqueeze(-1)
-    core_values = torch.cat([sp_vals, v_eff.unsqueeze(0)], dim=1)
+    core_values = torch.cat([sp_vals, v_new.unsqueeze(0)], dim=1)
     core_one = torch.cat([sp_one, log_w.exp().unsqueeze(0)], dim=-1)
 
     for exact in (False, True):
@@ -318,6 +332,7 @@ def test_determinism():
 
 if __name__ == "__main__":
     test_train_excludes_test_queries()
+    test_probe_queries_use_latest_window_not_prefix_start()
     test_reference_position()
     test_no_random_queries()
     test_runs_and_eval_includes_special()

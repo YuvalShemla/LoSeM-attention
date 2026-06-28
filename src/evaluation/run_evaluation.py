@@ -39,6 +39,11 @@ from .evaluator import (
     aggregate_query_stats,
     aggregate_group_cosines,
     aggregate_group_cosines_by_head_group,
+    aggregate_prepare_timings,
+    aggregate_fit_timings,
+    aggregate_probe_eval_timings,
+    aggregate_inference_timings,
+    format_timing_summary,
     _algorithm_family,
     weighted_aggregate_heads,
     evaluate_probe_set_errors,
@@ -169,7 +174,7 @@ def replay_plots(results_dir: Path) -> None:
     budgets = config["evaluation"]["budget_sweep"][
         "absolute"
     ]
-    config_caption = format_eval_config_caption(config)
+    config_caption = format_eval_config_caption(config, algo_names)
     tasks = spec.get("tasks", [])
     task_details = spec.get("task_details", {})
 
@@ -380,7 +385,10 @@ def replay_plots(results_dir: Path) -> None:
 
 def _resolve_methods(algo_names, algo_configs, evaluation_cfg=None):
     """Expand algorithm configs into instances."""
-    from ..algorithms.probe_queries import inject_evaluation_probe_q
+    from ..algorithms.probe_queries import (
+        inject_evaluation_device,
+        inject_evaluation_probe_q,
+    )
 
     evaluation_cfg = evaluation_cfg or {}
     methods = []
@@ -389,6 +397,7 @@ def _resolve_methods(algo_names, algo_configs, evaluation_cfg=None):
         cfg = inject_evaluation_probe_q(
             name, algo_configs.get(name, {}), evaluation_cfg,
         )
+        cfg = inject_evaluation_device(cfg, evaluation_cfg)
         methods.extend(
             spec.cls.expand_from_config(cfg)
         )
@@ -497,6 +506,9 @@ class Evaluation:
         self.plot_probe_training_error = bool(
             exp.get("plot_probe_training_error", True)
         )
+        self.measure_timing = bool(
+            exp.get("measure_timing", True)
+        )
 
         self.head_mode = exp.get(
             "head_mode", "selected_heads"
@@ -581,6 +593,8 @@ class Evaluation:
         all_rows = []
         per_task_agg = {}
         per_task_detail = {}
+        per_task_timing = {}
+        per_task_timing_text = {}
         tasks_completed = []
         tasks_failed = []
 
@@ -593,14 +607,18 @@ class Evaluation:
             log.info(task_header)
             log.info("=" * 50)
             try:
-                task_rows, task_agg, task_detail = (
+                task_rows, task_agg, task_detail, task_timing = (
                     self._run_task(
-                        task, methods, algorithms, rng,
+                        task, methods, algorithms, rng, algo_names,
                     )
                 )
                 all_rows.extend(task_rows)
                 per_task_agg[task] = task_agg
                 per_task_detail[task] = task_detail
+                per_task_timing[task] = task_timing
+                summary_text = task_timing.get("summary")
+                if summary_text:
+                    per_task_timing_text[task] = summary_text
                 tasks_completed.append(task)
             except Exception as e:
                 log.error("FAILED %s: %s", task, e)
@@ -616,7 +634,7 @@ class Evaluation:
                 algorithms, self.config,
             )
             config_caption = format_eval_config_caption(
-                self.config,
+                self.config, algo_names,
             )
             ov_dir = self.out_dir / "overview"
             ov_dir.mkdir(exist_ok=True)
@@ -646,7 +664,7 @@ class Evaluation:
 
         self._save_csv(all_rows)
         elapsed = time.time() - t0
-        self._save_json("run.json", {
+        run_meta = {
             "start_time": datetime.fromtimestamp(
                 t0
             ).isoformat(),
@@ -654,7 +672,17 @@ class Evaluation:
             "wall_clock_seconds": elapsed,
             "tasks_completed": tasks_completed,
             "tasks_failed": tasks_failed,
-        })
+        }
+        if per_task_timing:
+            run_meta["timing_by_task"] = per_task_timing
+        self._save_json("run.json", run_meta)
+        if per_task_timing_text:
+            combined = self._format_combined_timing_summary(
+                per_task_timing_text,
+                wall_clock_seconds=elapsed,
+            )
+            self._save_text("timing_summary.txt", combined)
+            log.info("Timing summary: %s", self.out_dir / "timing_summary.txt")
 
         log.info("")
         log.info(
@@ -721,7 +749,7 @@ class Evaluation:
     # ── Per-task execution ──────────────────────────
 
     def _run_task(self, task, methods, algorithms,
-                  rng):
+                  rng, algo_names):
         """Run all methods on one task."""
         task_t0 = time.time()
         task_dir = self.out_dir / "per_task" / task
@@ -737,6 +765,10 @@ class Evaluation:
         per_head_fullattention_pq = {}
         rows = []
         cluster_quality_rows = []
+        prepare_records = []
+        fit_records = []
+        probe_eval_records = []
+        inference_records = []
         example_ids = set()
         seq_lens = []
         # One id per evaluate_query call; used to dedupe hg table cells
@@ -795,24 +827,64 @@ class Evaluation:
                 )
 
                 for m in methods:
-                    m.prepare(
-                        K, V, self.head_dim,
-                        queries=Q,
-                        query_positions=qpos_list,
-                        seed=self.seed,
-                    )
+                    if hasattr(m, "reset_method_timing"):
+                        m.reset_method_timing()
+                    if self.measure_timing:
+                        t_prep = time.perf_counter()
+                        m.prepare(
+                            K, V, self.head_dim,
+                            queries=Q,
+                            query_positions=qpos_list,
+                            seed=self.seed,
+                        )
+                        prepare_records.append({
+                            "method": m.name,
+                            "example_id": ex["example_id"],
+                            "layer": layer_idx,
+                            "head": q_head,
+                            "prepare_seconds": (
+                                time.perf_counter() - t_prep
+                            ),
+                        })
+                    else:
+                        m.prepare(
+                            K, V, self.head_dim,
+                            queries=Q,
+                            query_positions=qpos_list,
+                            seed=self.seed,
+                        )
 
                 probe_qr_merged: Dict = {}
                 for m in methods:
                     if not is_probe_q_method(m):
                         continue
-                    pe = evaluate_probe_set_errors(
-                        m, K, V, self.head_dim,
-                        self.budgets,
-                        self.n_sink,
-                        self.local_window,
-                        rng,
-                    )
+                    if self.measure_timing:
+                        t_probe = time.perf_counter()
+                        pe = evaluate_probe_set_errors(
+                            m, K, V, self.head_dim,
+                            self.budgets,
+                            self.n_sink,
+                            self.local_window,
+                            rng,
+                            measure_timing=True,
+                        )
+                        probe_eval_records.append({
+                            "method": m.name,
+                            "example_id": ex["example_id"],
+                            "layer": layer_idx,
+                            "head": q_head,
+                            "probe_eval_seconds": (
+                                time.perf_counter() - t_probe
+                            ),
+                        })
+                    else:
+                        pe = evaluate_probe_set_errors(
+                            m, K, V, self.head_dim,
+                            self.budgets,
+                            self.n_sink,
+                            self.local_window,
+                            rng,
+                        )
                     probe_qr_merged.update(pe)
                 if probe_qr_merged:
                     per_head_probe_results.setdefault(
@@ -894,6 +966,7 @@ class Evaluation:
                         compute_group_cosine_distribution=(
                             self.compute_group_cosine_distribution
                         ),
+                        measure_timing=self.measure_timing,
                     )
                     all_results.append(qr)
                     for mk, mval in qr.items():
@@ -1123,8 +1196,31 @@ class Evaluation:
                             "rel_l2_error": (
                                 val["error"]
                             ),
+                            "run_seconds": val.get("run_seconds"),
                             "seed": self.seed,
                         })
+
+                if self.measure_timing:
+                    for m in methods:
+                        snap = m.snapshot_method_timing()
+                        for budget, fit_s in snap.fit_by_budget.items():
+                            fit_records.append({
+                                "method": m.name,
+                                "budget": int(budget),
+                                "fit_seconds": fit_s,
+                                "example_id": ex["example_id"],
+                                "layer": layer_idx,
+                                "head": q_head,
+                            })
+                        if snap.inference_calls > 0:
+                            inference_records.append({
+                                "method": m.name,
+                                "example_id": ex["example_id"],
+                                "layer": layer_idx,
+                                "head": q_head,
+                                "inference_seconds": snap.inference_seconds,
+                                "inference_calls": snap.inference_calls,
+                            })
 
                 del Q, K, V
                 clear_kmeans_cache()
@@ -1137,7 +1233,7 @@ class Evaluation:
             algorithms, self.config,
         )
         config_caption = format_eval_config_caption(
-            self.config,
+            self.config, algo_names,
         )
 
         # Per-head aggregation and plots
@@ -1421,6 +1517,61 @@ class Evaluation:
             f"per_task/{task}/aggregated_stats.json",
             agg,
         )
+
+        task_timing = {}
+        if self.measure_timing:
+            prepare_agg = aggregate_prepare_timings(prepare_records)
+            fit_agg = aggregate_fit_timings(fit_records)
+            probe_eval_agg = aggregate_probe_eval_timings(
+                probe_eval_records,
+            )
+            inference_agg = aggregate_inference_timings(
+                inference_records,
+            )
+            task_timing = {
+                "prepare": prepare_agg,
+                "coreset_fit": fit_agg,
+                "probe_eval": probe_eval_agg,
+                "inference": inference_agg,
+                "test_run": {
+                    k: {
+                        kk: vv for kk, vv in v.items()
+                        if kk.startswith("run_seconds")
+                        or kk == "n_queries"
+                    }
+                    for k, v in agg.items()
+                    if any(
+                        rk.startswith("run_seconds")
+                        for rk in v
+                    )
+                },
+            }
+            self._save_json(
+                f"per_task/{task}/timing.json",
+                task_timing,
+            )
+            method_kinds = {m.name: m.kind for m in methods}
+            timing_msg = format_timing_summary(
+                prepare_agg,
+                agg,
+                fit_agg=fit_agg,
+                probe_eval_agg=probe_eval_agg,
+                inference_agg=inference_agg,
+                algorithm_only=True,
+                method_kinds=method_kinds,
+            )
+            if timing_msg:
+                task_header = (
+                    f"Task: {task}\n"
+                    f"Completed: {datetime.now().isoformat()}\n"
+                )
+                task_timing["summary"] = timing_msg
+                self._save_text(
+                    f"per_task/{task}/timing_summary.txt",
+                    task_header + timing_msg + "\n",
+                )
+                log.info("")
+                log.info(timing_msg)
         data_stats = {
             "task": task,
             "n_queries": n_total,
@@ -1495,7 +1646,9 @@ class Evaluation:
             "total_queries": n_total,
             "seq_lens": sorted(set(seq_lens)),
         }
-        return rows, agg, task_detail
+        if task_timing:
+            task_detail["timing"] = task_timing
+        return rows, agg, task_detail, task_timing
 
     # ── Head resolution ─────────────────────────────
 
@@ -1646,6 +1799,31 @@ class Evaluation:
             json.dump(data, f, indent=2,
                       default=str)
 
+    def _save_text(self, filename: str, text: str) -> Path:
+        path = self.out_dir / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _format_combined_timing_summary(
+        per_task_text: Dict[str, str],
+        *,
+        wall_clock_seconds: float,
+    ) -> str:
+        lines = [
+            "Evaluation timing summary",
+            f"Wall clock: {wall_clock_seconds:.0f}s",
+            "",
+        ]
+        for task, summary in per_task_text.items():
+            lines.append("=" * 60)
+            lines.append(f"Task: {task}")
+            lines.append("=" * 60)
+            lines.append(summary.rstrip())
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
     def _save_csv(self, rows):
         if not rows:
             return
@@ -1654,7 +1832,7 @@ class Evaluation:
             "task", "layer", "head", "example_id",
             "query_pos", "method", "method_kind",
             "budget", "actual_budget",
-            "rel_l2_error", "seed",
+            "rel_l2_error", "run_seconds", "seed",
         ]
         with open(path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fields)

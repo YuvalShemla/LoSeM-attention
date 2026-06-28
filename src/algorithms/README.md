@@ -402,9 +402,9 @@ Because training == eval, the learned pairs are forced to calibrate their
 earlier self-normalized formulation left the mass uncalibrated and the candidate
 contribution exploded when combined with the exact special tokens / `Z_exact`.
 
-**Probe queries.** Context queries nearest the test position (the last
-`evaluation.n_train_queries`, excluding the evaluation queries). Shared with
-TFCFW-lq via `src/algorithms/probe_queries.py`. The forward pass is fully
+**Probe queries.** The latest ``evaluation.n_train_queries`` query vectors in
+the causal prefix before the test position (trailing window, excluding test
+queries). Shared with TFCFW-lq via ``src/algorithms/probe_queries.py``. The forward pass is fully
 vectorized over the probe batch; Adam with step LR decay and early stopping on a
 held-out 10% split. The relative-L2 denominator is floored (`rel_l2_floor`) so
 high-entropy heads with small-norm targets do not dominate the gradient.
