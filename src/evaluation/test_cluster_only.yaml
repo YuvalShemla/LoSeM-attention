@@ -1,0 +1,77 @@
+model:
+  hf_name: meta-llama/Meta-Llama-3.1-8B
+  mlx_name: mlx-community/Meta-Llama-3.1-8B-bf16
+  num_layers: 32
+  num_q_heads: 32
+  num_kv_heads: 8
+  head_dim: 128
+  context_window: 131072
+  rope:
+    theta: 500000.0
+    method: standard
+    scaling: null
+    source: model.rotary_emb
+data:
+  vectors_dir: data/vectors
+  results_dir: results
+tasks:
+- code_run
+skip_idealized:
+- ideal_equal_splits
+- ideal_equal_weight_splits
+evaluation:
+  seed: 42
+  n_queries: 1
+  n_examples: 1
+  use_rope: true
+  normalize_keys_to_median_norm: false
+  normalize_queries_to_median_norm: false
+  compute_statistics: false
+  compute_group_cosine_distribution: false
+  head_mode: "selected_heads"
+  exclude_sink_token: true
+  local_window:
+    size: 128
+  budget_sweep:
+    absolute:
+    - 512
+    - 1024
+    - 4096
+    - 8192
+algorithm_configs:
+  mq_beta_cluster:
+    m_pq: 8
+    variants:
+    - {topk_frac: 0.0, n_clusters: 512}
+    - {topk_frac: 0.0, n_clusters: 1024}
+    - {topk_frac: 0.0, n_clusters: 4096}
+    - {topk_frac: 0.0, n_clusters: 8192}
+  kmeans_cluster_only:
+    n_clusters_sweep:
+    - 512
+    - 1024
+    - 4096
+    - 8192
+  vattention_pq:
+    m_sweep:
+    - 8
+plotting:
+  figsize: [16, 10]
+  dpi: 200
+  error_bands: false
+  dashed_prefixes:
+  - Oracle
+  budget_sweep_colors:
+    MQBeta-C512: '#e1bee7'
+    MQBeta-C1024: '#ce93d8'
+    MQBeta-C4096: '#9c27b0'
+    MQBeta-C8192: '#4a148c'
+    KMeans-C512: '#ffe0b2'
+    KMeans-C1024: '#ffb74d'
+    KMeans-C4096: '#f57c00'
+    KMeans-C8192: '#e65100'
+    vAttention(PQ-m8): '#795548'
+  idealized_colors:
+    IdealTopK: '#d62728'
+    IdealSampling: '#2ca02c'
+    vAttention(oracle): '#ff1493'

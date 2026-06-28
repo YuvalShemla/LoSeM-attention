@@ -538,11 +538,18 @@ def plot_idealized_methods(
                 ]
                 idx = len(seen_prefixes) % len(palette)
                 color = palette[idx]
+            dashed_prefixes = plot_cfg.get(
+                "dashed_prefixes",
+                budget_sweep_colors.get(
+                    "_dashed_prefixes", []))
+            is_dashed = any(
+                dp in prefix for dp in dashed_prefixes)
             _plot_with_error_band(
                 ax, x, y,
                 s if show_bands else None,
                 color=color,
-                ls="-", marker="D", lw=2, ms=6,
+                ls="--" if is_dashed else "-",
+                marker="D", lw=2, ms=6,
                 zorder=5,
                 label=prefix,
             )
@@ -763,6 +770,18 @@ def plot_evaluation(
     setup_style()
     figsize = tuple(plot_cfg.get("figsize", [16, 10]))
     dpi = plot_cfg.get("dpi", 200)
+    max_scatter_points = int(
+        plot_cfg.get("fullattention_pq_topk_scatter_max_points", 20000)
+    )
+    max_scatter_points = int(
+        plot_cfg.get("fullattention_pq_topk_scatter_max_points", 20000)
+    )
+    max_scatter_points = int(
+        plot_cfg.get("fullattention_pq_topk_scatter_max_points", 20000)
+    )
+    max_scatter_points = int(
+        plot_cfg.get("fullattention_pq_topk_scatter_max_points", 20000)
+    )
     show_bands = plot_cfg.get("error_bands", True)
 
     scales = []
@@ -1137,6 +1156,601 @@ def plot_per_head_comparison(
             fig,
             out_dir
             / f"per_head_comparison_{scale}.png",
+            dpi=dpi,
+        )
+
+
+def _probe_method_prefix(method_key: str) -> str:
+    """``Learned-kmeans-1024`` -> ``Learned-kmeans``; ``TFCFW-lq-4096`` -> ``TFCFW-lq``."""
+    return method_key.rsplit("-", 1)[0]
+
+
+def _probe_method_color_key(method_prefix: str) -> str:
+    if method_prefix.startswith("Learned"):
+        return "learned"
+    if method_prefix.startswith("TFCFW-lq"):
+        return "tensor_fcfw_lq"
+    return method_prefix.lower().replace("-", "_")
+
+
+def _probe_method_budget_points(
+    agg: Dict,
+    method_prefix: str,
+    budgets: List[int],
+) -> tuple:
+    """Extract (x, y, y_std) for a method family across requested budgets."""
+    x_vals, y_vals, s_vals = [], [], []
+    for b in budgets:
+        key = f"{method_prefix}-{b}"
+        if key not in agg:
+            continue
+        entry = agg[key]
+        x_vals.append(entry["budget_mean"])
+        y_vals.append(entry["error_mean"])
+        s_vals.append(
+            entry.get(
+                "probe_error_std_mean",
+                entry.get("error_std", 0.0),
+            ),
+        )
+    return x_vals, y_vals, s_vals
+
+
+def plot_probe_training_error(
+    per_head_probe_aggs: Dict[int, Dict],
+    out_dir: Path,
+    plot_cfg: Dict,
+    budgets: List[int],
+    task_name: str = "",
+    seq_desc: str = "",
+    config_caption: str = "",
+):
+    """
+    Per-head probe mean rel-L2 vs budget for probe-Q methods.
+
+    Solid lines: mean rel-L2 over the training probe set ``Q`` (same metric as
+    eval). Dashed overlays: held-out test-query eval error from the main run.
+    """
+    setup_style()
+    if not per_head_probe_aggs:
+        return
+
+    figsize = tuple(plot_cfg.get("figsize", [16, 10]))
+    dpi = plot_cfg.get("dpi", 200)
+    show_bands = plot_cfg.get("error_bands", True)
+    algo_colors = plot_cfg.get("algorithm_colors", {})
+
+    n = len(per_head_probe_aggs)
+    cols = min(n, 3)
+    rows_n = (n + cols - 1) // cols
+    if n == rows_n * cols:
+        rows_n += 1
+
+    scales = []
+    if plot_cfg.get("log_scale", True):
+        scales.append(True)
+    if plot_cfg.get("linear_scale", True):
+        scales.append(False)
+
+    def _per_head_sort_key(i: int) -> tuple:
+        info = per_head_probe_aggs[i]
+        ent = info.get("effective_entropy")
+        if ent is None:
+            e = float("inf")
+        else:
+            try:
+                e = float(ent)
+                if not np.isfinite(e):
+                    e = float("inf")
+            except (TypeError, ValueError):
+                e = float("inf")
+        return (
+            e,
+            info.get("layer", 10**9),
+            info.get("q_head", 10**9),
+        )
+
+    sorted_idxs = sorted(
+        per_head_probe_aggs.keys(),
+        key=_per_head_sort_key,
+    )
+
+    for log_scale in scales:
+        scale = "log" if log_scale else "linear"
+        fig, axes = plt.subplots(
+            rows_n, cols,
+            figsize=(
+                figsize[0],
+                min(figsize[1] * rows_n / 2, 50),
+            ),
+            squeeze=False,
+        )
+
+        for i, idx in enumerate(sorted_idxs):
+            r, c = divmod(i, cols)
+            ax = axes[r][c]
+            info = per_head_probe_aggs[idx]
+            probe_agg = info.get("probe_agg", {})
+            test_agg = info.get("test_agg", {})
+
+            prefixes = sorted({
+                _probe_method_prefix(k)
+                for k in probe_agg
+            })
+            for prefix in prefixes:
+                ck = _probe_method_color_key(prefix)
+                fam = algo_colors.get(ck, {})
+                color = fam.get("hybrid", fam.get("topk", "#333333"))
+                marker = fam.get("marker", "o")
+
+                x_p, y_p, s_p = _probe_method_budget_points(
+                    probe_agg, prefix, budgets,
+                )
+                if x_p:
+                    _plot_with_error_band(
+                        ax, x_p, y_p,
+                        s_p if show_bands else None,
+                        color=color,
+                        ls="-", marker=marker,
+                        lw=2.2, ms=7, zorder=5,
+                        label=f"{prefix} (probe)",
+                    )
+
+                x_t, y_t, s_t = _probe_method_budget_points(
+                    test_agg, prefix, budgets,
+                )
+                if x_t:
+                    _plot_with_error_band(
+                        ax, x_t, y_t,
+                        s_t if show_bands else None,
+                        color=color,
+                        ls="--", marker=marker,
+                        lw=2.0, ms=6, alpha=0.85, zorder=4,
+                        label=f"{prefix} (test)",
+                    )
+
+            title = (
+                f"L{info['layer']}H{info['q_head']}"
+            )
+            lbl = info.get("selection_label", "")
+            ent = info.get("effective_entropy")
+            if lbl:
+                title += f" ({lbl}"
+                if ent is not None:
+                    title += f", ent={ent:.2f}"
+                title += ")"
+            elif ent is not None:
+                title += f" (ent={ent:.2f})"
+            n_probes = info.get("n_probes")
+            if n_probes:
+                title += f"\n|Q|={n_probes:,}"
+            ax.set_title(title, fontsize=10)
+
+            if log_scale:
+                ax.set_xscale("log")
+                ax.set_yscale("log")
+                _format_log_axes(ax, budgets)
+            ax.set_xlabel("Budget")
+            ax.set_ylabel("rel-L2 error")
+            ax.legend(fontsize=7, loc="best")
+
+        spare_start = n
+        info_placed = False
+        for j in range(spare_start, rows_n * cols):
+            r, c = divmod(j, cols)
+            if not info_placed:
+                ax_info = axes[r][c]
+                ax_info.axis("off")
+                lines = [
+                    "Probe training error",
+                    "",
+                    "Solid: mean rel-L2 over probe set Q",
+                    "(same metric as eval).",
+                    "",
+                    "Dashed: held-out test-query",
+                    "eval error (main run).",
+                ]
+                ax_info.text(
+                    0.02, 0.98, "\n".join(lines),
+                    transform=ax_info.transAxes,
+                    fontsize=9,
+                    verticalalignment="top",
+                    family="monospace",
+                )
+                info_placed = True
+            else:
+                axes[r][c].set_visible(False)
+
+        suptitle = "Probe Training Error vs Budget"
+        if task_name:
+            suptitle = f"{task_name} — {suptitle}"
+        if seq_desc:
+            suptitle += f" — {seq_desc}"
+        suptitle += f" ({scale})"
+        if config_caption:
+            suptitle = f"{suptitle}\n{config_caption}"
+        fig.suptitle(
+            suptitle, fontsize=14,
+            fontweight="bold",
+        )
+        plt.tight_layout()
+        save_figure(
+            fig,
+            out_dir
+            / f"probe_training_error_{scale}.png",
+            dpi=dpi,
+        )
+
+
+def plot_fullattention_pq_topk_profiles(
+    per_head_profiles: Dict[int, Dict],
+    out_dir: Path,
+    plot_cfg: Dict,
+    task_name: str = "",
+    seq_desc: str = "",
+    config_caption: str = "",
+):
+    """
+    For each requested budget B, plot per-head curves of true p_i vs
+    PQ-estimated p_i for FullAttentionPQ_topk.
+
+    Within each head, p_i are sorted in decreasing order by true p_i.
+    Top-left annotation reports Z and Z_hat means over plotted queries.
+    """
+    setup_style()
+    if not per_head_profiles:
+        return
+
+    all_budgets = sorted({
+        int(b)
+        for info in per_head_profiles.values()
+        for b in info.get("profiles_by_budget", {}).keys()
+    })
+    if not all_budgets:
+        return
+
+    figsize = tuple(plot_cfg.get("figsize", [16, 10]))
+    dpi = plot_cfg.get("dpi", 200)
+    max_scatter_points = int(
+        plot_cfg.get("fullattention_pq_topk_scatter_max_points", 20000)
+    )
+
+    def _per_head_sort_key(i: int) -> tuple:
+        info = per_head_profiles[i]
+        ent = info.get("effective_entropy")
+        if ent is None:
+            e = float("inf")
+        else:
+            try:
+                e = float(ent)
+                if not np.isfinite(e):
+                    e = float("inf")
+            except (TypeError, ValueError):
+                e = float("inf")
+        return (
+            e,
+            info.get("layer", 10**9),
+            info.get("q_head", 10**9),
+        )
+
+    sorted_idxs = sorted(
+        per_head_profiles.keys(), key=_per_head_sort_key,
+    )
+    n = len(sorted_idxs)
+    cols = min(n, 3)
+    rows_n = (n + cols - 1) // cols
+
+    for b in all_budgets:
+        fig, axes = plt.subplots(
+            rows_n,
+            cols,
+            figsize=(
+                figsize[0],
+                min(figsize[1] * rows_n / 2, 50),
+            ),
+            squeeze=False,
+        )
+        plotted_any = False
+
+        for i, idx in enumerate(sorted_idxs):
+            r, c = divmod(i, cols)
+            ax = axes[r][c]
+            info = per_head_profiles[idx]
+            recs = info.get("profiles_by_budget", {}).get(b, [])
+            if not recs:
+                ax.text(
+                    0.5, 0.5, "n/a",
+                    ha="center", va="center",
+                    transform=ax.transAxes,
+                )
+                ax.set_title(
+                    f"L{info['layer']}H{info['q_head']}",
+                    fontsize=10,
+                )
+                continue
+
+            pairs = []
+            z_true_vals = []
+            z_est_vals = []
+            min_len = None
+            for rec in recs:
+                p_true = np.asarray(
+                    rec.get("p_true", []), dtype=np.float64,
+                )
+                p_est = np.asarray(
+                    rec.get("p_est_true_z", []), dtype=np.float64,
+                )
+                l_true = np.asarray(
+                    rec.get("logits_true", []), dtype=np.float64,
+                )
+                l_est = np.asarray(
+                    rec.get("logits_est", []), dtype=np.float64,
+                )
+                if (
+                    p_true.size == 0
+                    or p_est.size == 0
+                    or l_true.size == 0
+                    or l_est.size == 0
+                    or p_true.size != p_est.size
+                    or p_true.size != l_true.size
+                    or p_true.size != l_est.size
+                ):
+                    continue
+                ord_idx = np.argsort(-np.abs(l_true - l_est))
+                t = p_true[ord_idx]
+                e = p_est[ord_idx]
+                d = np.abs(l_true[ord_idx] - l_est[ord_idx])
+                if min_len is None:
+                    min_len = t.size
+                else:
+                    min_len = min(min_len, t.size)
+                pairs.append((t, e, d))
+                z_true_vals.append(float(rec.get("z_true", np.nan)))
+                z_est_vals.append(float(rec.get("z_est", np.nan)))
+
+            if not pairs or min_len is None or min_len < 1:
+                ax.text(
+                    0.5, 0.5, "n/a",
+                    ha="center", va="center",
+                    transform=ax.transAxes,
+                )
+                ax.set_title(
+                    f"L{info['layer']}H{info['q_head']}",
+                    fontsize=10,
+                )
+                continue
+
+            true_stack = np.stack(
+                [t[:min_len] for t, _, _ in pairs], axis=0,
+            )
+            est_stack = np.stack(
+                [e[:min_len] for _, e, _ in pairs], axis=0,
+            )
+            diff_stack = np.stack(
+                [d[:min_len] for _, _, d in pairs], axis=0,
+            )
+            true_mean = np.mean(true_stack, axis=0)
+            est_mean = np.mean(est_stack, axis=0)
+            diff_mean = np.mean(diff_stack, axis=0)
+            x = np.arange(1, min_len + 1, dtype=np.int32)
+
+            ax.plot(
+                x, true_mean, color="#1f77b4",
+                lw=1.8, label=r"$p_i$ (true)",
+            )
+            ax.plot(
+                x, est_mean, color="#ff7f0e",
+                lw=1.5, linestyle="--",
+                label=r"$\hat{p}_i$ (PQ est, true-$Z$ norm)",
+            )
+            ax_diff = ax.twinx()
+            ax_diff.plot(
+                x, diff_mean, color="#d62728",
+                lw=1.4, label=r"$|\ell_i - s_i|$",
+                zorder=10,
+            )
+            ax.set_yscale("log")
+            ax.set_xlabel(
+                r"rank $i$ (sorted by $|\ell_i - s_i|$ desc)"
+            )
+            if c == 0:
+                ax.set_ylabel("probability (true-Z normalized)")
+                ax_diff.set_ylabel(r"$|\ell_i - s_i|$", color="#d62728")
+            else:
+                ax.set_yticklabels([])
+                ax_diff.set_yticklabels([])
+            ax_diff.tick_params(axis="y", colors="#d62728")
+            lbl = info.get("selection_label", "")
+            ent = info.get("effective_entropy")
+            title = f"L{info['layer']}H{info['q_head']}"
+            if lbl:
+                title += f" ({lbl}"
+                if ent is not None:
+                    title += f", ent={ent:.2f}"
+                title += ")"
+            elif ent is not None:
+                title += f" (ent={ent:.2f})"
+            ax.set_title(title, fontsize=10)
+            zt = float(np.nanmean(np.asarray(z_true_vals, dtype=np.float64)))
+            ze = float(np.nanmean(np.asarray(z_est_vals, dtype=np.float64)))
+            ax.text(
+                0.02, 0.98,
+                f"Z={zt:.3e}\nZ_hat={ze:.3e}",
+                transform=ax.transAxes,
+                va="top", ha="left", fontsize=8,
+                bbox=dict(
+                    boxstyle="round,pad=0.2",
+                    facecolor="white", alpha=0.75,
+                    edgecolor="none",
+                ),
+            )
+            if r == 0 and c == 0:
+                h1, l1 = ax.get_legend_handles_labels()
+                h2, l2 = ax_diff.get_legend_handles_labels()
+                ax.legend(h1 + h2, l1 + l2, loc="upper right", fontsize=8)
+            plotted_any = True
+
+        for i in range(n, rows_n * cols):
+            r, c = divmod(i, cols)
+            axes[r][c].set_visible(False)
+
+        if not plotted_any:
+            plt.close(fig)
+            continue
+
+        suptitle = (
+            "FullAttentionPQ_topk diagnostic (probabilities): "
+            r"blue $p_i=\exp(\ell_i)/Z$, "
+            r"orange $\hat{p}_i=\exp(s_i)/Z$ "
+            r"(mixed score: $s_i=\ell_i$ for PQ-top-B, "
+            r"$s_i=\hat{\ell}_i$ otherwise), "
+            r"red $|\ell_i-s_i|$ (linear) on secondary y-axis, "
+            r"blue/orange on log-scale primary y-axis, "
+            f"sorted by decreasing $|\ell_i-s_i|$ (B={b})"
+        )
+        if task_name:
+            suptitle = f"{task_name} — {suptitle}"
+        if seq_desc:
+            suptitle += f" — {seq_desc}"
+        if config_caption:
+            suptitle = f"{suptitle}\n{config_caption}"
+        fig.suptitle(
+            suptitle, fontsize=14, fontweight="bold",
+        )
+        plt.tight_layout()
+        save_figure(
+            fig,
+            out_dir / f"fullattention_pq_topk_pi_vs_est_b{b}.png",
+            dpi=dpi,
+        )
+
+        # Per-head scatter of estimated vs true logits (s_i vs l_i).
+        fig_sc, axes_sc = plt.subplots(
+            rows_n,
+            cols,
+            figsize=(
+                figsize[0],
+                min(figsize[1] * rows_n / 2, 50),
+            ),
+            squeeze=False,
+        )
+        plotted_scatter = False
+        for i, idx in enumerate(sorted_idxs):
+            r, c = divmod(i, cols)
+            ax_sc = axes_sc[r][c]
+            info = per_head_profiles[idx]
+            recs = info.get("profiles_by_budget", {}).get(b, [])
+            if not recs:
+                ax_sc.text(
+                    0.5, 0.5, "n/a",
+                    ha="center", va="center",
+                    transform=ax_sc.transAxes,
+                )
+                ax_sc.set_title(
+                    f"L{info['layer']}H{info['q_head']}",
+                    fontsize=10,
+                )
+                continue
+
+            l_true_list = []
+            l_est_list = []
+            for rec in recs:
+                l_true = np.asarray(
+                    rec.get("logits_true", []), dtype=np.float64,
+                )
+                l_est = np.asarray(
+                    rec.get("logits_est", []), dtype=np.float64,
+                )
+                if (
+                    l_true.size == 0
+                    or l_est.size == 0
+                    or l_true.size != l_est.size
+                ):
+                    continue
+                l_true_list.append(l_true)
+                l_est_list.append(l_est)
+
+            if not l_true_list:
+                ax_sc.text(
+                    0.5, 0.5, "n/a",
+                    ha="center", va="center",
+                    transform=ax_sc.transAxes,
+                )
+                ax_sc.set_title(
+                    f"L{info['layer']}H{info['q_head']}",
+                    fontsize=10,
+                )
+                continue
+
+            x_all = np.concatenate(l_true_list, axis=0)
+            y_all = np.concatenate(l_est_list, axis=0)
+            if max_scatter_points > 0 and x_all.size > max_scatter_points:
+                stride = int(np.ceil(x_all.size / max_scatter_points))
+                x_all = x_all[::stride]
+                y_all = y_all[::stride]
+
+            ax_sc.scatter(
+                x_all, y_all,
+                s=4, alpha=0.2, c="#6a1b9a",
+                edgecolors="none",
+            )
+            mn = float(min(np.min(x_all), np.min(y_all)))
+            mx = float(max(np.max(x_all), np.max(y_all)))
+            ax_sc.plot(
+                [mn, mx], [mn, mx],
+                color="#111111", lw=1.0, linestyle="--",
+                label="y=x",
+            )
+            ax_sc.set_xlim(mn, mx)
+            ax_sc.set_ylim(mn, mx)
+            ax_sc.set_aspect("equal", adjustable="box")
+            ax_sc.set_xlabel(r"$\ell_i$ (true logit)")
+            if c == 0:
+                ax_sc.set_ylabel(r"$s_i$ (estimated/mixed logit)")
+            else:
+                ax_sc.set_yticklabels([])
+            lbl = info.get("selection_label", "")
+            ent = info.get("effective_entropy")
+            title = f"L{info['layer']}H{info['q_head']}"
+            if lbl:
+                title += f" ({lbl}"
+                if ent is not None:
+                    title += f", ent={ent:.2f}"
+                title += ")"
+            elif ent is not None:
+                title += f" (ent={ent:.2f})"
+            ax_sc.set_title(title, fontsize=10)
+            if r == 0 and c == 0:
+                ax_sc.legend(loc="upper left", fontsize=8)
+            plotted_scatter = True
+
+        for i in range(n, rows_n * cols):
+            r, c = divmod(i, cols)
+            axes_sc[r][c].set_visible(False)
+
+        if not plotted_scatter:
+            plt.close(fig_sc)
+            continue
+
+        suptitle_sc = (
+            "FullAttentionPQ_topk logit scatter: "
+            r"$x=\ell_i$ (true), $y=s_i$ (estimated/mixed), "
+            r"dashed line is $y=x$, "
+            f"B={b}"
+        )
+        if task_name:
+            suptitle_sc = f"{task_name} — {suptitle_sc}"
+        if seq_desc:
+            suptitle_sc += f" — {seq_desc}"
+        if config_caption:
+            suptitle_sc = f"{suptitle_sc}\n{config_caption}"
+        fig_sc.suptitle(
+            suptitle_sc, fontsize=14, fontweight="bold",
+        )
+        plt.tight_layout()
+        save_figure(
+            fig_sc,
+            out_dir / f"fullattention_pq_topk_scatter_logits_b{b}.png",
             dpi=dpi,
         )
 

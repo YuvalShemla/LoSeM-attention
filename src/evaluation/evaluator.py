@@ -15,6 +15,77 @@ from ..core import (
 )
 
 
+def is_probe_q_method(method) -> bool:
+    """True for algorithms that train/select on a shared probe set ``Q``."""
+    return method.__class__.__name__ in (
+        "LearnedCoreset",
+        "TensorFCFWLq",
+    )
+
+
+def evaluate_probe_set_errors(
+    method,
+    keys: np.ndarray,
+    values: np.ndarray,
+    head_dim: int,
+    budgets: List[int],
+    n_sink: int,
+    local_window: int,
+    rng: np.random.Generator,
+) -> Dict:
+    """
+    Mean probe rel-L2 per budget, using the same forward as ``method.run()``.
+
+    Each probe ``q`` in ``Q`` is scored against full attention over the
+    reference context (``keys[:ref_pos+1]``), matching the Learned training
+    geometry. Returns keys ``{method.name}-{budget}`` compatible with
+    ``aggregate_results``.
+    """
+    if not is_probe_q_method(method):
+        return {}
+    probes = getattr(method, "_probe_queries", None)
+    ref_pos = getattr(method, "_ref_pos", None)
+    if probes is None or ref_pos is None or probes.shape[0] == 0:
+        return {}
+
+    n_causal = ref_pos + 1
+    keys_c = keys[:n_causal]
+    values_c = values[:n_causal]
+    sp_idx, cand_idx = compute_special_indices(
+        n_causal, n_sink, local_window,
+    )
+
+    results: Dict = {}
+    for b in sorted(budgets):
+        errs: List[float] = []
+        actual_budget = None
+        for q in probes:
+            full_out, logits, _ = full_attention(
+                q, keys_c, values_c, head_dim,
+            )
+            problem = AttentionInput(
+                query=q,
+                keys=keys_c,
+                values=values_c,
+                head_dim=head_dim,
+                logits=logits,
+                special_idx=sp_idx,
+                candidate_idx=cand_idx,
+            )
+            out = method.run(problem, b, rng)
+            errs.append(relative_l2_error(out.output, full_out))
+            actual_budget = out.actual_budget
+        key = f"{method.name}-{b}"
+        results[key] = {
+            "error": float(np.mean(errs)),
+            "probe_error_std": float(np.std(errs)),
+            "budget": int(actual_budget) if actual_budget is not None else b,
+            "requested_budget": int(b),
+            "n_probes": len(errs),
+        }
+    return results
+
+
 def evaluate_query(
     q: np.ndarray,
     keys: np.ndarray,
@@ -59,7 +130,10 @@ def evaluate_query(
                 results[k] = {
                     "error": err,
                     "budget": out.actual_budget,
+                    "requested_budget": int(b),
                 }
+                if out.debug_payload is not None:
+                    results[k]["debug_payload"] = out.debug_payload
                 if compute_group_cosine_distribution:
                     gc = _group_cosines(
                         problem.keys,
@@ -92,7 +166,10 @@ def evaluate_query(
             results[m.name] = {
                 "error": err,
                 "budget": out.actual_budget,
+                "requested_budget": 0,
             }
+            if out.debug_payload is not None:
+                results[m.name]["debug_payload"] = out.debug_payload
             if compute_group_cosine_distribution:
                 gc = _group_cosines(
                     problem.keys,
@@ -483,6 +560,17 @@ def aggregate_results(all_results: List[Dict]) -> Dict:
             "budget_std": float(np.std(budgets)),
             "n_queries": len(entries),
         }
+        probe_stds = [
+            e["probe_error_std"] for e in entries
+            if "probe_error_std" in e
+        ]
+        if probe_stds:
+            agg[key]["probe_error_std_mean"] = float(
+                np.mean(probe_stds),
+            )
+        n_probes = [e.get("n_probes") for e in entries if e.get("n_probes")]
+        if n_probes:
+            agg[key]["n_probes"] = int(n_probes[0])
     return agg
 
 

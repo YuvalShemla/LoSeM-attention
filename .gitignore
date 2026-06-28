@@ -64,3 +64,11 @@ results/
 
 # Claude dumps
 claude_dumps/
+
+# Large data files
+*.tar
+*.tar.gz
+cartridge/datasets/*/vectors/**/*.pt
+data/notebook_data/*.npz
+notebooks/gemma4*/head_statistics.json
+*.zip

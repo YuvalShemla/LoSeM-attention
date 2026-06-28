@@ -48,6 +48,8 @@ class AttentionOutput:
     # list of arrays of member key indices, one per
     # grouped representative/bucket used by the method.
     grouped_member_indices: Optional[List[np.ndarray]] = None
+    # Optional method-specific debug payload.
+    debug_payload: Optional[Dict] = None
 
 
 class AttentionAlgorithm(ABC):
@@ -77,12 +79,18 @@ class AttentionAlgorithm(ABC):
         queries: Optional[np.ndarray] = None,
         query_positions: Optional[List[int]] = None,
         seed: int = 42,
+        train_queries: Optional[np.ndarray] = None,
     ) -> None:
         """
         Called once per example for precomputation.
 
         Override in subclasses that need offline setup
         (clustering, sorting, etc.). Default: no-op.
+
+        train_queries: optional external training queries
+        (e.g. from self-study). When provided, algorithms
+        should use these instead of extracting queries from
+        the sequence Q. Shape: [n_train, head_dim].
         """
         pass
 

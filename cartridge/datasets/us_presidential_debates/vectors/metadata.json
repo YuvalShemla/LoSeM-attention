@@ -1,0 +1,53 @@
+{
+  "task": "self_study_us_presidential_debates",
+  "source": "THUDM/LongBench-v2 + self-study",
+  "model": "meta-llama/Meta-Llama-3.1-8B",
+  "selected_heads": [
+    {
+      "layer": 0,
+      "q_head": 22,
+      "kv_head": 5,
+      "label": "p100_highest"
+    },
+    {
+      "layer": 12,
+      "q_head": 25,
+      "kv_head": 6,
+      "label": "p25"
+    },
+    {
+      "layer": 15,
+      "q_head": 22,
+      "kv_head": 5,
+      "label": "p50_median"
+    },
+    {
+      "layer": 27,
+      "q_head": 7,
+      "kv_head": 1,
+      "label": "p75"
+    },
+    {
+      "layer": 31,
+      "q_head": 14,
+      "kv_head": 3,
+      "label": "p0_lowest"
+    }
+  ],
+  "layers_extracted": [
+    0,
+    12,
+    15,
+    27,
+    31
+  ],
+  "context_tokens": 44998,
+  "n_conversations": 1000,
+  "n_examples": 1000,
+  "extraction_config": {
+    "max_context_tokens": 125000,
+    "max_new_tokens": 256,
+    "store_raw_vectors": true,
+    "store_rope_vectors": true
+  }
+}

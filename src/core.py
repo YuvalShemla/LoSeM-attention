@@ -404,9 +404,14 @@ def flat_kmeans(
         )
         np.minimum(min_dists, new_d, out=min_dists)
         np.maximum(min_dists, 0.0, out=min_dists)
-        probs = min_dists / (min_dists.sum() + 1e-10)
-        probs = probs / probs.sum()
-        centroids[c] = data[rng.choice(N, p=probs)]
+        total = float(min_dists.sum())
+        if total <= 0 or not np.isfinite(total):
+            # All remaining points are already centroid duplicates;
+            # fall back to uniform sampling.
+            centroids[c] = data[rng.integers(N)]
+        else:
+            probs = min_dists / total
+            centroids[c] = data[rng.choice(N, p=probs)]
 
     labels = np.zeros(N, dtype=np.int32)
     for _ in range(n_iter):
