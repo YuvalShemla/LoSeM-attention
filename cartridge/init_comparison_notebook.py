@@ -452,18 +452,26 @@ def init_mqbeta(budget, K_ctx, V_ctx, cand_idx, Q_train, rng):
     n_clusters = min(budget, n)
     Q = Q_train.astype(np.float64)
     sqrt_d = np.sqrt(d)
+    if len(Q) == 0:
+        # Fallback to plain kmeans if no training queries
+        return init_kmeans(budget, K_ctx, V_ctx, cand_idx, rng)
     # M_Q
     M_Q = Q.T @ Q + 1e-6 * np.eye(d)
     eigvals, eigvecs = np.linalg.eigh(M_Q)
     eigvals = np.maximum(eigvals, 0.0)
     sqrt_eig = np.sqrt(eigvals)
-    # Rho importance
+    # Rho importance — numerically stable per-row softmax
     BATCH = 500
     rho = np.zeros(n, np.float64)
     for b0 in range(0, len(Q), BATCH):
         b1 = min(b0+BATCH, len(Q))
         logits = (Q[b0:b1] @ ck.T) / sqrt_d
-        rho += np.sum(np.exp(logits - logits.max(axis=1, keepdims=True)), axis=0)
+        logits_shifted = logits - logits.max(axis=1, keepdims=True)
+        np.clip(logits_shifted, -50, 0, out=logits_shifted)  # prevent underflow
+        rho += np.sum(np.exp(logits_shifted), axis=0)
+    # Clean up any NaN/Inf
+    rho = np.nan_to_num(rho, nan=1.0, posinf=1.0, neginf=0.0)
+    rho = np.maximum(rho, 1e-30)
     # Weighted k-means in M_Q space
     K_z = (ck @ eigvecs * sqrt_eig[None, :]).astype(np.float32)
     _, labels = _weighted_kmeans(K_z, rho, n_clusters, seed=int(rng.integers(1<<30)), n_iter=50)
