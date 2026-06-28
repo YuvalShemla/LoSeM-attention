@@ -21,6 +21,14 @@ from .pq_topk import PQIndex
 from ..core import softmax, cached_flat_kmeans
 
 
+def _full_index_candidate_mask(index_len: int, candidate_idx: np.ndarray) -> np.ndarray:
+    """Mask over a full prepared PQ index, allowing only current causal candidates."""
+    mask = np.zeros(index_len, dtype=bool)
+    valid = candidate_idx[candidate_idx < index_len]
+    mask[valid] = True
+    return mask
+
+
 class KClusterTopK(AttentionAlgorithm):
     """
     KMeans on keys + top-K selection + cluster residuals.
@@ -35,11 +43,13 @@ class KClusterTopK(AttentionAlgorithm):
     def __init__(self, n_clusters: int = 1024,
                  topk_method: str = "oracle",
                  order: int = 0,
-                 m_pq: int = 8):
+                 m_pq: int = 8,
+                 n_codes_pq: int = 256):
         self.n_clusters = n_clusters
         self.topk_method = topk_method
         self.order = order
         self.m_pq = m_pq
+        self.n_codes_pq = n_codes_pq
         self._pq = None
         self._seed = 42
 
@@ -65,7 +75,7 @@ class KClusterTopK(AttentionAlgorithm):
         self._seed = seed
         if self.topk_method == "pq":
             self._pq = PQIndex(
-                m=self.m_pq, n_codes=256, seed=seed,
+                m=self.m_pq, n_codes=self.n_codes_pq, seed=seed,
             )
             self._pq.fit(keys)
 
@@ -141,12 +151,13 @@ class KClusterTopK(AttentionAlgorithm):
                 topk_local = np.arange(n_cand)
             topk_global = candidate_idx[topk_local]
         else:
-            cand_mask = np.zeros(n, dtype=bool)
-            cand_mask[candidate_idx] = True
+            cand_mask = _full_index_candidate_mask(
+                len(self._pq.codes), candidate_idx,
+            )
             topk_global = self._pq.approximate_topk(
                 q, buse, candidate_mask=cand_mask,
             )
-            g2l = np.full(n, -1, dtype=np.int64)
+            g2l = np.full(n_pq, -1, dtype=np.int64)
             g2l[candidate_idx] = np.arange(n_cand)
             topk_local = g2l[topk_global]
             valid = topk_local >= 0
@@ -234,6 +245,7 @@ class KClusterTopK(AttentionAlgorithm):
             "oracle", "oracle_2nd", "pq", "pq_2nd",
         ])
         m_pq = cfg.get("m_pq", 8)
+        n_codes_pq = int(cfg.get("n_codes_pq", 256))
 
         instances = []
         for nc in clusters:
@@ -252,11 +264,13 @@ class KClusterTopK(AttentionAlgorithm):
                     instances.append(KClusterTopK(
                         n_clusters=nc, topk_method="pq",
                         order=0, m_pq=m_pq,
+                        n_codes_pq=n_codes_pq,
                     ))
                 elif method == "pq_2nd":
                     instances.append(KClusterTopK(
                         n_clusters=nc, topk_method="pq",
                         order=2, m_pq=m_pq,
+                        n_codes_pq=n_codes_pq,
                     ))
         return instances
 
@@ -276,9 +290,11 @@ class OracleClusterPQTopK(AttentionAlgorithm):
     """
 
     def __init__(self, n_clusters: int = 1024,
-                 m_pq: int = 8):
+                 m_pq: int = 8,
+                 n_codes_pq: int = 256):
         self.n_clusters = n_clusters
         self.m_pq = m_pq
+        self.n_codes_pq = n_codes_pq
         self._pq = None
         self._seed = 42
 
@@ -295,7 +311,7 @@ class OracleClusterPQTopK(AttentionAlgorithm):
                 seed=42):
         self._seed = seed
         self._pq = PQIndex(
-            m=self.m_pq, n_codes=256, seed=seed,
+            m=self.m_pq, n_codes=self.n_codes_pq, seed=seed,
         )
         self._pq.fit(keys)
 
@@ -361,12 +377,13 @@ class OracleClusterPQTopK(AttentionAlgorithm):
 
         # PQ approximate top-k
         buse = min(budget, n_cand)
-        cand_mask = np.zeros(n, dtype=bool)
-        cand_mask[candidate_idx] = True
+        cand_mask = _full_index_candidate_mask(
+            len(self._pq.codes), candidate_idx,
+        )
         topk_global = self._pq.approximate_topk(
             q, buse, candidate_mask=cand_mask,
         )
-        g2l = np.full(n, -1, dtype=np.int64)
+        g2l = np.full(n_pq, -1, dtype=np.int64)
         g2l[candidate_idx] = np.arange(n_cand)
         topk_local = g2l[topk_global]
         valid = topk_local >= 0
@@ -437,7 +454,12 @@ class OracleClusterPQTopK(AttentionAlgorithm):
         if isinstance(clusters, int):
             clusters = [clusters]
         m_pq = cfg.get("m_pq", 8)
+        n_codes_pq = int(cfg.get("n_codes_pq", 256))
         return [
-            OracleClusterPQTopK(n_clusters=nc, m_pq=m_pq)
+            OracleClusterPQTopK(
+                n_clusters=nc,
+                m_pq=m_pq,
+                n_codes_pq=n_codes_pq,
+            )
             for nc in clusters
         ]
