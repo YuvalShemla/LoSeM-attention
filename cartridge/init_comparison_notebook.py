@@ -6,8 +6,9 @@
 # 1. Setup & data loading
 # 2. Init-only comparison (no training) vs IdealTopK & vAttention
 # 3. Adam post-training — all 7 inits
-# 4. L-BFGS (KVSculpt-style) post-training — all 7 inits
-# 5. Adam vs L-BFGS comparison
+# 4. L-BFGS (KVSculpt-style) post-training — K-only + ridge V solve
+# 4b. Full-Softmax L-BFGS — same loss as Adam, learns K+V+w
+# 5. Adam vs KVSculpt-LBFGS vs Full-LBFGS comparison
 # 6. exact_denominator ablation (True vs False)
 # 7. Training query source comparison (self-study vs De-RoPE vs context)
 
@@ -899,51 +900,199 @@ for head in HEADS:
         )
 
 # %% [markdown]
+# ## Section 4b: Full-Softmax L-BFGS
+# Same loss as Adam (relative L2 on full softmax output), same learnable params (K, V, w),
+# but using L-BFGS optimizer instead of Adam. Compute-matched: 300 steps × 10 inner iters
+# ≈ 3000 gradient evaluations, same as Adam's 3000 steps.
+
+# %%
+# ── 4b-a. Full-softmax L-BFGS training function ──
+def train_lbfgs_full_softmax(K_init, V_init, w_init, Q_train, K_ctx, V_ctx,
+                              head_dim, ref_pos, n_sink, local_window,
+                              cfg, exact_denominator=False, dev=None, seed=42):
+    """L-BFGS optimizing the SAME loss as Adam (relative L2 on full softmax output).
+    Learns K, V, and w (all three), just like Adam.
+    300 outer steps × max_iter=10 ≈ 3000 gradient evals to match Adam compute.
+    Returns (K_trained, V_trained, w_trained, history)."""
+    if dev is None: dev = device
+    scale = 1.0 / np.sqrt(head_dim)
+    n_causal = ref_pos + 1
+    sp_idx, cand_idx = compute_special_indices(n_causal, n_sink, local_window)
+
+    probes = torch.as_tensor(Q_train, dtype=torch.float32, device=dev)
+    keys_ref = torch.as_tensor(K_ctx[:n_causal], dtype=torch.float32, device=dev)
+    vals_ref = torch.as_tensor(V_ctx[:n_causal], dtype=torch.float32, device=dev)
+
+    k_new = nn.Parameter(torch.as_tensor(K_init, dtype=torch.float32, device=dev).clone())
+    v_new = nn.Parameter(torch.as_tensor(V_init, dtype=torch.float32, device=dev).clone())
+    log_w = nn.Parameter(torch.log(torch.as_tensor(
+        np.clip(w_init, 1e-8, None), dtype=torch.float32, device=dev).clone()))
+
+    with torch.no_grad():
+        consts = _precompute_targets(probes, keys_ref, vals_ref, sp_idx, None, scale)
+    del keys_ref, vals_ref
+
+    # Use full batch (L-BFGS needs deterministic closure)
+    m = probes.shape[0]
+    rng_np = np.random.default_rng(seed)
+    perm = rng_np.permutation(m)
+    n_val = max(1, int(m * cfg["val_fraction"])) if m >= 10 else 0
+    val_idx = torch.as_tensor(perm[:n_val], dtype=torch.long, device=dev)
+    train_idx = torch.as_tensor(perm[n_val:], dtype=torch.long, device=dev)
+    if train_idx.numel() == 0:
+        train_idx = torch.arange(m, device=dev)
+
+    # 300 outer steps × 10 inner = ~3000 gradient evals (matching Adam)
+    n_outer = 300
+    max_inner = 10
+    optimizer = torch.optim.LBFGS(
+        [k_new, v_new, log_w], lr=0.5, max_iter=max_inner,
+        line_search_fn="strong_wolfe",
+        tolerance_grad=1e-7, tolerance_change=1e-9,
+    )
+
+    best_val = float("inf")
+    best = (k_new.detach().clone(), v_new.detach().clone(), log_w.detach().clone())
+    history = {"train_loss": [], "val_loss": []}
+    stale = 0
+    patience = 50  # early stop if no improvement for 50 outer steps
+
+    for step in range(n_outer):
+        def closure():
+            optimizer.zero_grad()
+            pred, target = _forward_pred(consts, train_idx, k_new, v_new, log_w,
+                                          scale, exact_denominator)
+            loss = _loss_value(pred, target, cfg["loss"], cfg["rel_l2_floor"])
+            loss.backward()
+            return loss
+
+        loss_val = optimizer.step(closure)
+        history["train_loss"].append(float(loss_val))
+
+        if val_idx.numel() > 0:
+            with torch.no_grad():
+                vp, vt = _forward_pred(consts, val_idx, k_new, v_new, log_w,
+                                        scale, exact_denominator)
+                val_loss = float(_loss_value(vp, vt, cfg["loss"], cfg["rel_l2_floor"]))
+            history["val_loss"].append(val_loss)
+            if val_loss < best_val - 1e-9:
+                best_val = val_loss
+                best = (k_new.detach().clone(), v_new.detach().clone(), log_w.detach().clone())
+                stale = 0
+            else:
+                stale += 1
+                if stale >= patience:
+                    break
+
+    if val_idx.numel() > 0:
+        k_new, v_new, log_w = best
+
+    K_out = k_new.detach().cpu().numpy().astype(np.float32)
+    V_out = v_new.detach().cpu().numpy().astype(np.float32)
+    w_out = log_w.detach().exp().cpu().numpy().astype(np.float32)
+
+    del consts, probes, k_new, v_new, log_w
+    torch.cuda.empty_cache()
+    return K_out, V_out, w_out, history
+
+# %%
+# ── 4b-b. Run full-softmax L-BFGS ──
+print("\n" + "="*60)
+print("Section 4b: Full-Softmax L-BFGS (300 steps × 10 inner)")
+print("="*60)
+
+results_lbfgs_full = defaultdict(lambda: defaultdict(dict))
+histories_lbfgs_full = defaultdict(lambda: defaultdict(dict))
+
+for head in HEADS:
+    label = head["label"]
+    hd = head_data[label]
+    ref_pos = hd["ctx_len"] - 1
+    print(f"\n  {label} (ent={head['entropy']:.2f})...")
+
+    rng = np.random.default_rng(SEED)
+    for budget in BUDGETS:
+        inits = compute_all_inits(label, budget, rng)
+        for method, (K_init, V_init, w_init) in inits.items():
+            t0 = time.time()
+            K_t, V_t, w_t, hist = train_lbfgs_full_softmax(
+                K_init, V_init, w_init,
+                hd["Q_train"], hd["K_rope"], hd["V"],
+                HEAD_DIM, ref_pos, N_SINK, LOCAL_WINDOW,
+                ADAM_CFG, exact_denominator=False, seed=SEED+budget,
+            )
+            err = evaluate_coreset_on_problems(K_t, V_t, w_t, hd["test_problems"])
+            results_lbfgs_full[label][method][budget] = err
+            histories_lbfgs_full[label][method][budget] = hist
+            steps = len(hist["train_loss"])
+            print(f"    {method} B={budget}: err={err:.6f} ({steps} steps, {time.time()-t0:.0f}s)")
+        gc.collect(); torch.cuda.empty_cache()
+
+# %%
+# ── 4b-c. Plot full-softmax L-BFGS results ──
+plot_error_vs_budget(
+    results_lbfgs_full, baselines_all, BUDGETS,
+    f"After Full-Softmax L-BFGS — {DATASET}\n300 steps×10 inner, same loss as Adam, exact_denom=False",
+    out_path="lbfgs_full_softmax_comparison.png",
+)
+
+# %%
+# ── 4b-d. Plot training curves ──
+for head in HEADS:
+    label = head["label"]
+    if label in histories_lbfgs_full:
+        plot_training_curves(
+            histories_lbfgs_full[label], BUDGETS, label, head["entropy"],
+            out_path=f"training_curves_lbfgs_full_{label}.png",
+        )
+
+# %% [markdown]
 # ## Section 5: Adam vs L-BFGS Comparison
 
 # %%
-def plot_adam_vs_lbfgs(results_adam, results_lbfgs, baselines, budgets, out_path=None):
-    """Side-by-side: solid=Adam, dashed=L-BFGS for each init."""
-    head_labels = sorted(results_adam.keys(),
+def plot_optimizer_comparison(results_dict, baselines, budgets, title, out_path=None):
+    """Compare multiple optimizers. results_dict[optimizer_name][head][method][budget]=err."""
+    opt_styles = {"Adam": ("-", "o"), "KVSculpt-LBFGS": ("--", "s"), "Full-LBFGS": (":", "D")}
+    head_labels = sorted(list(list(results_dict.values())[0].keys()),
                          key=lambda l: next(h["entropy"] for h in HEADS if h["label"]==l))
     n = len(head_labels)
     cols = min(n, 3)
     rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows), squeeze=False)
-    fig.suptitle(f"Adam vs L-BFGS — {DATASET}", fontsize=13, fontweight="bold")
+    fig.suptitle(title, fontsize=13, fontweight="bold")
 
     for i, hl in enumerate(head_labels):
         r, c = divmod(i, cols)
         ax = axes[r][c]
         head = next(h for h in HEADS if h["label"] == hl)
 
-        # Baselines
         if hl in baselines:
             bl = baselines[hl]
             for bn, bs in [("IdealTopK", "r--"), ("vAttention", "r-")]:
                 if bn in bl:
                     x = [b for b in budgets if b in bl[bn]]
                     y = [bl[bn][b] for b in x]
-                    ax.plot(x, y, bs, marker="x" if "TopK" in bn else "+", lw=2, ms=8, label=bn, zorder=10)
+                    ax.plot(x, y, bs, marker="x" if "TopK" in bn else "+",
+                            lw=2, ms=8, label=bn, zorder=10)
 
         for method in INIT_ORDER:
             color = INIT_COLORS.get(method, "gray")
-            # Adam (solid)
-            if method in results_adam.get(hl, {}):
-                x = [b for b in budgets if b in results_adam[hl][method]]
-                y = [results_adam[hl][method][b] for b in x]
-                if x: ax.plot(x, y, color=color, marker="o", lw=2, ms=5, label=f"{method} (Adam)")
-            # L-BFGS (dashed)
-            if method in results_lbfgs.get(hl, {}):
-                x = [b for b in budgets if b in results_lbfgs[hl][method]]
-                y = [results_lbfgs[hl][method][b] for b in x]
-                if x: ax.plot(x, y, color=color, marker="s", lw=2, ms=5, ls="--", label=f"{method} (LBFGS)")
+            for opt_name, (ls, marker) in opt_styles.items():
+                if opt_name not in results_dict:
+                    continue
+                res = results_dict[opt_name]
+                if method in res.get(hl, {}):
+                    x = [b for b in budgets if b in res[hl][method]]
+                    y = [res[hl][method][b] for b in x]
+                    if x:
+                        ax.plot(x, y, color=color, marker=marker, lw=2, ms=5,
+                                ls=ls, label=f"{method} ({opt_name})")
 
         ax.set_title(f"{hl} (ent={head['entropy']:.2f})", fontsize=10)
         ax.set_xscale("log"); ax.set_yscale("log")
         ax.set_xlabel("Budget"); ax.grid(True, alpha=0.3)
         if c == 0: ax.set_ylabel("Rel L2 Error")
-        if i == 0: ax.legend(fontsize=5, loc="upper right", ncol=2)
+        if i == 0: ax.legend(fontsize=4, loc="upper right", ncol=3)
 
     for i in range(len(head_labels), rows*cols):
         r, c = divmod(i, cols)
@@ -954,8 +1103,50 @@ def plot_adam_vs_lbfgs(results_adam, results_lbfgs, baselines, budgets, out_path
         print(f"Saved: {out_path}")
     plt.show(); plt.close(fig)
 
-plot_adam_vs_lbfgs(results_adam, results_lbfgs, baselines_all, BUDGETS,
-                   out_path="adam_vs_lbfgs.png")
+# All three optimizers
+plot_optimizer_comparison(
+    {"Adam": results_adam, "KVSculpt-LBFGS": results_lbfgs, "Full-LBFGS": results_lbfgs_full},
+    baselines_all, BUDGETS,
+    f"Adam vs KVSculpt-LBFGS vs Full-LBFGS — {DATASET}\n"
+    f"Adam: 3000 steps | KVSculpt: 100 K-steps | Full-LBFGS: 300×10 steps",
+    out_path="optimizer_comparison.png",
+)
+
+# %%
+# Per-init comparison: for each init, which optimizer is best?
+for method in ["MQBeta", "TFCFW-omp", "KVSculpt", "KMeans"]:
+    head_labels = sorted(results_adam.keys(),
+                         key=lambda l: next(h["entropy"] for h in HEADS if h["label"]==l))
+    fig, axes = plt.subplots(1, len(head_labels), figsize=(5*len(head_labels), 4), squeeze=False)
+    fig.suptitle(f"Optimizer Comparison — {method} init", fontsize=13, fontweight="bold")
+    opt_data = {"Adam": results_adam, "KVSculpt-LBFGS": results_lbfgs, "Full-LBFGS": results_lbfgs_full}
+    opt_colors = {"Adam": "#1f77b4", "KVSculpt-LBFGS": "#ff7f0e", "Full-LBFGS": "#2ca02c"}
+    opt_ls = {"Adam": "-", "KVSculpt-LBFGS": "--", "Full-LBFGS": ":"}
+    for i, hl in enumerate(head_labels):
+        ax = axes[0][i]
+        head = next(h for h in HEADS if h["label"] == hl)
+        for opt_name, res in opt_data.items():
+            if method in res.get(hl, {}):
+                x = [b for b in BUDGETS if b in res[hl][method]]
+                y = [res[hl][method][b] for b in x]
+                if x: ax.plot(x, y, color=opt_colors[opt_name], ls=opt_ls[opt_name],
+                              marker="o", lw=2, ms=5, label=opt_name)
+        # Baselines
+        if hl in baselines_all:
+            bl = baselines_all[hl]
+            if "IdealTopK" in bl:
+                x = [b for b in BUDGETS if b in bl["IdealTopK"]]
+                y = [bl["IdealTopK"][b] for b in x]
+                ax.plot(x, y, "r--", marker="x", lw=1, ms=6, label="IdealTopK", alpha=0.5)
+        ax.set_title(f"{hl} (ent={head['entropy']:.2f})")
+        ax.set_xscale("log"); ax.set_yscale("log"); ax.grid(True, alpha=0.3)
+        ax.set_xlabel("Budget")
+        if i == 0: ax.set_ylabel("Rel L2 Error"); ax.legend(fontsize=8)
+    plt.tight_layout()
+    out = f"optimizer_per_init_{method}.png"
+    fig.savefig(out, dpi=200, bbox_inches="tight")
+    print(f"Saved: {out}")
+    plt.show(); plt.close(fig)
 
 # %% [markdown]
 # ## Section 6: exact_denominator Ablation
@@ -1129,7 +1320,9 @@ for method in QUERY_DEPENDENT_METHODS:
 # - `init_only_comparison.png` — Section 2
 # - `adam_comparison.png` — Section 3
 # - `training_curves_adam_*.png` — Section 3 training curves
-# - `lbfgs_comparison.png` — Section 4
-# - `adam_vs_lbfgs.png` — Section 5
+# - `lbfgs_comparison.png` — Section 4 (KVSculpt-style: K-only + ridge V)
+# - `lbfgs_full_softmax_comparison.png` — Section 4b (full-softmax L-BFGS: K+V+w)
+# - `optimizer_comparison.png` — Section 5 (all 3 optimizers)
+# - `optimizer_per_init_*.png` — Section 5 (per-init optimizer comparison)
 # - `exact_denom_comparison.png` — Section 6
 # - `query_source_*.png` — Section 7
