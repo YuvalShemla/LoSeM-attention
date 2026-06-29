@@ -672,6 +672,33 @@ def _select_fw_cholesky(
     return selected[:r], new_state
 
 
+def _finalize_lq_coreset_weights(
+    coreset: torch.Tensor,
+    cmpd_values: torch.Tensor,
+    *,
+    exact_denominator: bool,
+    probes: torch.Tensor,
+    cand_keys: torch.Tensor,
+    ref_keys: Optional[torch.Tensor],
+    ref_values: Optional[torch.Tensor],
+    sp_idx: Optional[torch.Tensor],
+    scale: float,
+    irls_iters: int,
+    rcond: float,
+    seed: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Unit weights at selection; local mass calibration runs in stage 2."""
+    del (
+        probes, cand_keys, ref_keys, ref_values, sp_idx, scale,
+        irls_iters, rcond, seed,
+    )
+    device = cmpd_values.device
+    dtype = cmpd_values.dtype
+    if coreset.numel() == 0:
+        return cmpd_values, torch.zeros(0, dtype=dtype, device=device)
+    return cmpd_values, torch.ones(coreset.shape[0], dtype=dtype, device=device)
+
+
 def select_lq_coreset(
     probe_queries: torch.Tensor,
     cand_keys: torch.Tensor,
@@ -683,7 +710,7 @@ def select_lq_coreset(
     rcond: float = 1e-3,
     jitter: float = 1e-6,
     state: Optional[Dict] = None,
-    numerator_only: bool = True,
+    exact_denominator: bool = True,
     ref_keys: Optional[torch.Tensor] = None,
     ref_values: Optional[torch.Tensor] = None,
     sp_idx: Optional[torch.Tensor] = None,
@@ -691,6 +718,7 @@ def select_lq_coreset(
     scoring_irls_iters: Optional[int] = None,
     correction_irls_iters: Optional[int] = None,
     correction_period: int = 400,
+    seed: int = 42,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
     """Select ``r`` candidate keys and synthetic values under the ``lq`` norm.
 
@@ -737,20 +765,37 @@ def select_lq_coreset(
         ref_v = ref_values.to(work_dtype)
         sp_t = sp_idx.to(device=device, dtype=torch.long)
 
-    design, target = build_lq_design_and_target(
-        probes, keys, values, scale, numerator_only, ref_k, ref_v, sp_t,
-    )
+    # Key selection + value IRLS always use the numerator (values-only) design.
+    # When ``exact_denominator=True`` and reference context is available, use the
+    # normalized exact-denom training system; otherwise plain attention profiles.
+    if exact_denominator and ref_k is not None and ref_v is not None and sp_t is not None:
+        design, target = build_lq_design_and_target(
+            probes, keys, values, scale, True, ref_k, ref_v, sp_t,
+        )
+    else:
+        design, target = build_lq_design_and_target(
+            probes, keys, values, scale, True, None, None, None,
+        )
 
     if oracle == "fc_lq":
         coreset, cmpd_values, new_state = _select_fc_lq(
             design, target, r, irls_iters, rcond, state, progress,
         )
-        new_state["numerator_only"] = bool(numerator_only)
-        if numerator_only:
-            w = torch.ones(coreset.shape[0], dtype=cand_keys.dtype, device=device)
-        else:
-            w = cmpd_values[:, 0].to(cand_keys.dtype)
-            cmpd_values = cmpd_values[:, 1:].to(cand_keys.dtype)
+        new_state["exact_denominator"] = bool(exact_denominator)
+        cmpd_values, w = _finalize_lq_coreset_weights(
+            coreset,
+            cmpd_values,
+            exact_denominator=exact_denominator,
+            probes=probes,
+            cand_keys=keys,
+            ref_keys=ref_k,
+            ref_values=ref_v,
+            sp_idx=sp_t,
+            scale=scale,
+            irls_iters=irls_iters,
+            rcond=rcond,
+            seed=seed,
+        )
         return coreset, cmpd_values, w, new_state
 
     if oracle in ("residual_lq", "residual_lq_deflated"):
@@ -768,25 +813,43 @@ def select_lq_coreset(
             oracle_name=oracle,
             deflate_scoring=(oracle == "residual_lq_deflated"),
         )
-        new_state["numerator_only"] = bool(numerator_only)
-        if numerator_only:
-            w = torch.ones(coreset.shape[0], dtype=cand_keys.dtype, device=device)
-        else:
-            w = cmpd_values[:, 0].to(cand_keys.dtype)
-            cmpd_values = cmpd_values[:, 1:].to(cand_keys.dtype)
+        new_state["exact_denominator"] = bool(exact_denominator)
+        cmpd_values, w = _finalize_lq_coreset_weights(
+            coreset,
+            cmpd_values,
+            exact_denominator=exact_denominator,
+            probes=probes,
+            cand_keys=keys,
+            ref_keys=ref_k,
+            ref_values=ref_v,
+            sp_idx=sp_t,
+            scale=scale,
+            irls_iters=irls_iters,
+            rcond=rcond,
+            seed=seed,
+        )
         return coreset, cmpd_values, w, new_state
 
     coreset, new_state = _select_fw_cholesky(
         design, target, values, mat, r, oracle, jitter,
-        numerator_only, state, progress,
+        True, state, progress,
     )
     a_sel = design[:, coreset]
-    if numerator_only:
-        cmpd_values = _irls_solve(a_sel, target, irls_iters, rcond)
-        w = torch.ones(r, dtype=cand_keys.dtype, device=device)
-    else:
-        u = _irls_solve(a_sel, target, irls_iters, rcond)
-        w = u[:, 0].to(cand_keys.dtype)
-        cmpd_values = u[:, 1:].to(cand_keys.dtype)
+    cmpd_values = _irls_solve(a_sel, target, irls_iters, rcond)
+    cmpd_values, w = _finalize_lq_coreset_weights(
+        coreset,
+        cmpd_values,
+        exact_denominator=exact_denominator,
+        probes=probes,
+        cand_keys=keys,
+        ref_keys=ref_k,
+        ref_values=ref_v,
+        sp_idx=sp_t,
+        scale=scale,
+        irls_iters=irls_iters,
+        rcond=rcond,
+        seed=seed,
+    )
+    new_state["exact_denominator"] = bool(exact_denominator)
 
     return coreset, cmpd_values, w, new_state

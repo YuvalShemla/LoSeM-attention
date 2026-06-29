@@ -855,41 +855,42 @@ class Evaluation:
                         )
 
                 probe_qr_merged: Dict = {}
-                for m in methods:
-                    if not is_probe_q_method(m):
-                        continue
-                    if self.measure_timing:
-                        t_probe = time.perf_counter()
-                        pe = evaluate_probe_set_errors(
-                            m, K, V, self.head_dim,
-                            self.budgets,
-                            self.n_sink,
-                            self.local_window,
-                            rng,
-                            measure_timing=True,
-                        )
-                        probe_eval_records.append({
-                            "method": m.name,
-                            "example_id": ex["example_id"],
-                            "layer": layer_idx,
-                            "head": q_head,
-                            "probe_eval_seconds": (
-                                time.perf_counter() - t_probe
-                            ),
-                        })
-                    else:
-                        pe = evaluate_probe_set_errors(
-                            m, K, V, self.head_dim,
-                            self.budgets,
-                            self.n_sink,
-                            self.local_window,
-                            rng,
-                        )
-                    probe_qr_merged.update(pe)
-                if probe_qr_merged:
-                    per_head_probe_results.setdefault(
-                        hi - 1, [],
-                    ).append(probe_qr_merged)
+                if self.plot_probe_training_error:
+                    for m in methods:
+                        if not is_probe_q_method(m):
+                            continue
+                        if self.measure_timing:
+                            t_probe = time.perf_counter()
+                            pe = evaluate_probe_set_errors(
+                                m, K, V, self.head_dim,
+                                self.budgets,
+                                self.n_sink,
+                                self.local_window,
+                                rng,
+                                measure_timing=True,
+                            )
+                            probe_eval_records.append({
+                                "method": m.name,
+                                "example_id": ex["example_id"],
+                                "layer": layer_idx,
+                                "head": q_head,
+                                "probe_eval_seconds": (
+                                    time.perf_counter() - t_probe
+                                ),
+                            })
+                        else:
+                            pe = evaluate_probe_set_errors(
+                                m, K, V, self.head_dim,
+                                self.budgets,
+                                self.n_sink,
+                                self.local_window,
+                                rng,
+                            )
+                        probe_qr_merged.update(pe)
+                    if probe_qr_merged:
+                        per_head_probe_results.setdefault(
+                            hi - 1, [],
+                        ).append(probe_qr_merged)
 
                 # Collect cluster quality metrics
                 for m in methods:

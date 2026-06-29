@@ -41,7 +41,7 @@ from ..probe_queries import (
     prepare_probe_queries,
     validate_train_q_strategy,
 )
-from .lbfgs_refine import refine_coreset_lbfgs
+from .lbfgs_refine import fit_denominator_only_weights, refine_coreset_lbfgs
 from .select_lq import select_lq_coreset
 
 
@@ -205,15 +205,13 @@ class TensorFCFWLq(AttentionAlgorithm):
         probes = torch.as_tensor(
             self._probe_queries, dtype=torch.float32, device=device,
         )
-        ref_keys = ref_vals = sp_t = None
-        if self.exact_denominator:
-            ref_keys = torch.as_tensor(
-                keys[:n_causal], dtype=torch.float32, device=device,
-            )
-            ref_vals = torch.as_tensor(
-                values[:n_causal], dtype=torch.float32, device=device,
-            )
-            sp_t = torch.as_tensor(sp_idx, dtype=torch.long, device=device)
+        ref_keys = torch.as_tensor(
+            keys[:n_causal], dtype=torch.float32, device=device,
+        )
+        ref_vals = torch.as_tensor(
+            values[:n_causal], dtype=torch.float32, device=device,
+        )
+        sp_t = torch.as_tensor(sp_idx, dtype=torch.long, device=device)
 
         core_local, cmpd_values, w, new_state = select_lq_coreset(
             probes,
@@ -224,8 +222,8 @@ class TensorFCFWLq(AttentionAlgorithm):
             oracle=self.oracle,
             irls_iters=self.irls_iters,
             rcond=self.rcond,
-            state=self._select_state,
-            numerator_only=self.exact_denominator,
+            state=self._select_state if self.exact_denominator else None,
+            exact_denominator=self.exact_denominator,
             ref_keys=ref_keys,
             ref_values=ref_vals,
             sp_idx=sp_t,
@@ -233,8 +231,10 @@ class TensorFCFWLq(AttentionAlgorithm):
             scoring_irls_iters=self.scoring_irls_iters,
             correction_irls_iters=self.correction_irls_iters,
             correction_period=self.correction_period,
+            seed=self._seed + budget,
         )
-        self._select_state = new_state
+        if self.exact_denominator:
+            self._select_state = new_state
 
         core_local_np = core_local.cpu().numpy()
         k_core = keys[cand_idx[core_local_np]].astype(np.float32)
@@ -242,7 +242,9 @@ class TensorFCFWLq(AttentionAlgorithm):
         w_np = w.cpu().numpy().astype(np.float32)
         global_idx = cand_idx[core_local_np].astype(np.int64)
 
-        if self.lbfgs_steps > 0 and k_core.shape[0] > 0:
+        if k_core.shape[0] > 0 and (
+            self.lbfgs_steps > 0 or not self.exact_denominator
+        ):
             keys_ref_t = torch.as_tensor(
                 keys[:n_causal], dtype=torch.float32, device=device,
             )
@@ -253,7 +255,10 @@ class TensorFCFWLq(AttentionAlgorithm):
             k_t = torch.as_tensor(k_core, dtype=torch.float32, device=device)
             v_t = torch.as_tensor(v_core, dtype=torch.float32, device=device)
             w_t = torch.as_tensor(w_np, dtype=torch.float32, device=device)
-            k_t, v_t, w_t = refine_coreset_lbfgs(
+            refine_steps = self.lbfgs_steps
+            if refine_steps <= 0:
+                refine_steps = max(self.irls_iters * 20, 50)
+            k_t, v_t, _ = refine_coreset_lbfgs(
                 k_t,
                 v_t,
                 w_t,
@@ -262,14 +267,49 @@ class TensorFCFWLq(AttentionAlgorithm):
                 values_ref_t,
                 sp_t,
                 scale,
-                n_steps=self.lbfgs_steps,
+                n_steps=refine_steps,
                 lbfgs_lr=self.lbfgs_lr,
                 lbfgs_inner_iter=self.lbfgs_inner_iter,
                 seed=self._seed + budget,
             )
             k_core = k_t.cpu().numpy().astype(np.float32)
             v_core = v_t.cpu().numpy().astype(np.float32)
-            w_np = w_t.cpu().numpy().astype(np.float32)
+            if not self.exact_denominator:
+                weight_steps = max(
+                    int(self.lbfgs_steps),
+                    max(self.irls_iters * 6, 30),
+                )
+                if weight_steps <= 0:
+                    weight_steps = max(self.irls_iters * 6, 30)
+                w_init = None
+                smaller = [b for b in self._coreset_cache if b < budget]
+                if smaller:
+                    _, _, w_prev, g_prev = self._coreset_cache[max(smaller)]
+                    prev_map = {int(g): i for i, g in enumerate(g_prev)}
+                    w_init = torch.ones(
+                        k_t.shape[0], dtype=torch.float32, device=device,
+                    )
+                    for i, g in enumerate(global_idx):
+                        j = prev_map.get(int(g))
+                        if j is not None:
+                            w_init[i] = float(w_prev[j])
+                w_t = fit_denominator_only_weights(
+                    probes,
+                    k_t,
+                    v_t,
+                    keys_ref_t,
+                    values_ref_t,
+                    sp_t,
+                    scale,
+                    n_steps=weight_steps,
+                    lbfgs_lr=self.lbfgs_lr,
+                    lbfgs_inner_iter=self.lbfgs_inner_iter,
+                    seed=self._seed + budget + 1,
+                    w_init=w_init,
+                )
+                w_np = w_t.cpu().numpy().astype(np.float32)
+            else:
+                w_np = np.ones(k_core.shape[0], dtype=np.float32)
 
         self.record_coreset_fit(budget, time.perf_counter() - t0)
         self._coreset_cache[budget] = (k_core, v_core, w_np, global_idx)
@@ -337,11 +377,24 @@ class TensorFCFWLq(AttentionAlgorithm):
             )
             core_keys = torch.cat([sp_keys, k_core], dim=1)
             core_values = torch.cat([sp_vals, v_core], dim=1)
-            core_one = torch.cat([sp_one, w_core], dim=-1)
+            if self.exact_denominator:
+                core_one = torch.cat([sp_one, w_core], dim=-1)
+                core_one_den = None
+            else:
+                core_one = torch.cat([
+                    sp_one,
+                    torch.ones_like(w_core),
+                ], dim=-1)
+                core_one_den = torch.cat([sp_one, w_core], dim=-1)
         else:
             core_keys = k_core
             core_values = v_core
-            core_one = w_core
+            if self.exact_denominator:
+                core_one = w_core
+                core_one_den = None
+            else:
+                core_one = torch.ones_like(w_core)
+                core_one_den = w_core
 
         q = torch.as_tensor(
             problem.query, dtype=torch.float32, device=device,
@@ -351,18 +404,19 @@ class TensorFCFWLq(AttentionAlgorithm):
         vmax = values_all.amax(dim=-2, keepdim=True)
 
         all_logits = None
-        if self.exact_denominator:
-            if problem.logits is None:
-                raise ValueError(
-                    "exact_denominator requires AttentionInput.logits",
-                )
+        if problem.logits is not None:
             all_logits = torch.as_tensor(
                 problem.logits, dtype=torch.float32, device=device,
+            )
+        elif self.exact_denominator:
+            raise ValueError(
+                "exact_denominator requires AttentionInput.logits",
             )
 
         out_t = weighted_attention(
             q, core_keys, core_values, core_one, scale, vmin, vmax,
             all_logits=all_logits,
+            core_one_den=core_one_den,
         )
         output = out_t.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
 

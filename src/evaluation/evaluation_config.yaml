@@ -35,7 +35,7 @@ evaluation:
   train_q_strategy: kvsculpt   # trailing | kvsculpt — shared by learned / TFCFW-lq / kvsculpt
   n_synthetic: 1000            # synthetic future queries when train_q_strategy=kvsculpt
   rope_theta: 500000.0          # RoPE theta for kvsculpt-type query construction
-  exact_denominator: true       # shared by learned / TFCFW-lq / kvsculpt
+  exact_denominator: false       # shared by learned / TFCFW-lq / kvsculpt
   device: cuda                  # shared by all torch algorithms (wildcat2/3, FCFW, TFCFW, learned, kvsculpt)
   use_rope: true
   normalize_keys_to_median_norm: false
@@ -47,7 +47,7 @@ evaluation:
   center_candidate_keys_for_pi_plot: true
   debug_top_logits: false
   plot_fullattention_pq_topk_profiles: true
-  plot_probe_training_error: true
+  plot_probe_training_error: false
   head_mode: "selected_heads"
   layers: "all"
   custom_heads:
@@ -65,7 +65,7 @@ evaluation:
 #    - 512
     - 1024
     - 2048
-#    - 4096
+    - 4096
 #    - 8192
 #    - 16384
 #    - 32768
@@ -273,7 +273,7 @@ algorithm_configs:
     scoring_irls_iters: 5      # residual_lq: IRLS steps for candidate scoring
     correction_irls_iters: 5  # residual_lq: IRLS steps on scheduled refresh steps
     correction_period: 0   # refresh every ceil(|S|/period) keys; 0 => every key
-    lbfgs_steps: 100         # KVSculpt-style post-refinement (0 => off)
+    lbfgs_steps: 100         # L-BFGS on (K,V) for unnormalized numerator; then denom weights if exact_d=false
     lbfgs_lr: 0.5
     lbfgs_inner_iter: 10
     rcond: 1.0e-3           # relative SVD cutoff for the value solve (safety when |Q| ~ budget)

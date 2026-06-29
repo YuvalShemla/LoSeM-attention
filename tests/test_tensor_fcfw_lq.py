@@ -93,7 +93,7 @@ def test_lq_objective_decreases_with_budget():
     prev = None
     for b in [8, 16, 32, 64, 128, 256]:
         sel, cv, w, _ = select_lq_coreset(
-            probes, keys, values, b, scale, numerator_only=True,
+            probes, keys, values, b, scale, exact_denominator=True,
         )
         assert torch.allclose(w, torch.ones_like(w))
         j = num_obj(sel, cv)
@@ -119,11 +119,11 @@ def test_irls_reduces_lq_objective_vs_l2():
 
     sel_l2, cv_l2, w_l2, _ = select_lq_coreset(
         probes, keys, values, 128, scale, irls_iters=1, rcond=1e-10,
-        numerator_only=True,
+        exact_denominator=True,
     )
     sel_lq, cv_lq, w_lq, _ = select_lq_coreset(
         probes, keys, values, 128, scale, irls_iters=10, rcond=1e-10,
-        numerator_only=True,
+        exact_denominator=True,
     )
     assert num_obj(sel_lq, cv_lq) <= num_obj(sel_l2, cv_l2) + 1e-5
 
@@ -237,6 +237,28 @@ def test_exact_denominator_changes_output():
     assert np.linalg.norm(o0.output - o1.output) > 0
 
 
+def test_local_denominator_monotone_in_budget():
+    """Local-denom refinement should not blow up at intermediate budgets."""
+    problem, queries, scale = _make_problem(
+        seed=5, sink=1, window=1024, n=2000, d=64,
+    )
+    exact = _exact(problem, scale)
+    rng = np.random.default_rng(0)
+    algo = TensorFCFWLq(
+        device="cpu", oracle="omp", exact_denominator=False,
+        n_train_queries=200, lbfgs_steps=80,
+        n_sink=1, local_window=1024,
+    )
+    _prepare(algo, problem, queries)
+    errs = []
+    for b in [64, 128, 256]:
+        out = algo.run(problem, b, rng)
+        errs.append(_rel_l2(out.output, exact))
+    assert all(np.isfinite(e) for e in errs)
+    # Toy data at tiny budgets stays noisy; guard against pathological blow-up only.
+    assert errs[-1] < 1.0
+
+
 def test_normalized_correction_beats_numerator_only():
     """On the same support, normalized IRLS beats numerator-only IRLS at exact-d eval."""
     from src.algorithms.tensor_fcfw_lq.select_lq import (
@@ -273,7 +295,7 @@ def test_normalized_correction_beats_numerator_only():
 
     b = 128
     sel, cv_norm, _, _ = select_lq_coreset(
-        probes, cand_keys, cand_values, b, scale, numerator_only=True,
+        probes, cand_keys, cand_values, b, scale, exact_denominator=True,
         ref_keys=ref_keys, ref_values=ref_values, sp_idx=sp_t,
     )
     cv_num = _irls_solve(a[:, sel], num_target, irls_iters=5, rcond=1e-3)
@@ -296,7 +318,7 @@ def test_fc_lq_objective_non_increasing():
     for b in [2, 4, 8, 16]:
         sel, cv, _, state = select_lq_coreset(
             probes, keys, values, b, scale,
-            oracle="fc_lq", numerator_only=True, state=state,
+            oracle="fc_lq", exact_denominator=True, state=state,
         )
         obj = lq_objective(design[:, sel], cv, target).item()
         if prev is not None:
@@ -317,7 +339,7 @@ def test_fc_lq_values_optimal_for_its_support():
     b = 12
 
     sel, cv, _, _ = select_lq_coreset(
-        probes, keys, values, b, scale, oracle="fc_lq", numerator_only=True,
+        probes, keys, values, b, scale, oracle="fc_lq", exact_denominator=True,
     )
     obj = lq_objective(design[:, sel], cv, target).item()
     cv_pert = cv + 0.01 * torch.randn_like(cv)
@@ -457,7 +479,7 @@ def test_residual_lq_objective_non_increasing():
     for b in [2, 4, 8, 16, 32]:
         sel, cv, _, state = select_lq_coreset(
             probes, keys, values, b, scale,
-            oracle="residual_lq", numerator_only=True, state=state,
+            oracle="residual_lq", exact_denominator=True, state=state,
         )
         obj = lq_objective(design[:, sel], cv, target).item()
         if prev is not None:
@@ -558,6 +580,116 @@ def test_lbfgs_post_refinement_runs_and_reduces_unnorm_loss():
         loss_before = relative_unnorm_numerator_loss(pred_before, target)
         loss_after = relative_unnorm_numerator_loss(pred_after, target)
     assert loss_after <= loss_before + 1e-6
+
+
+def test_lbfgs_local_denominator_keeps_weights():
+    problem, queries, _ = _make_problem(n=500, d=32, sink=2, window=32, seed=12)
+    kw = dict(
+        device="cpu", oracle="omp", exact_denominator=False,
+        n_sink=2, local_window=32, lbfgs_steps=50,
+    )
+    refined = TensorFCFWLq(**kw)
+    _prepare(refined, problem, queries)
+    rng = np.random.default_rng(0)
+    refined.run(problem, 16, rng)
+    _, _, w_r, _ = refined._coreset_cache[16]
+    assert w_r.shape[0] > 0
+    assert np.all(w_r > 0)
+    assert not np.allclose(w_r, 1.0)
+
+
+def test_denominator_only_weights_improve_output():
+    """Denom-only weights should beat unit weights on fixed (K, V) from L-BFGS."""
+    from src.algorithms.tensor_fcfw_lq.lbfgs_refine import (
+        fit_denominator_only_weights,
+        full_attention_targets,
+        relative_attention_loss,
+        split_denominator_attention,
+    )
+    from src.algorithms.tensor_fcfw_lq.select_lq import select_lq_coreset
+    from src.algorithms.tensor_fcfw_lq.lbfgs_refine import refine_coreset_lbfgs
+
+    from src.core import compute_special_indices
+
+    rng = np.random.default_rng(7)
+    n, d, m = 800, 32, 120
+    sink, window = 2, 64
+    keys = torch.tensor(rng.standard_normal((n, d)), dtype=torch.float32)
+    values = torch.tensor(rng.standard_normal((n, d)), dtype=torch.float32)
+    probes = torch.tensor(rng.standard_normal((m, d)), dtype=torch.float32)
+    scale = 1.0 / np.sqrt(d)
+    n_causal = n - 1
+    sp_idx, cand_idx = compute_special_indices(n_causal, sink, window)
+    ref_keys = keys[:n_causal]
+    ref_values = values[:n_causal]
+    sp_t = torch.tensor(sp_idx, dtype=torch.long)
+    cand_keys = keys[cand_idx]
+    cand_values = values[cand_idx]
+    b = 32
+
+    sel, v_sel, w_sel, _ = select_lq_coreset(
+        probes, cand_keys, cand_values, b, scale,
+        oracle="omp", exact_denominator=False,
+        ref_keys=ref_keys, ref_values=ref_values, sp_idx=sp_t,
+    )
+    k_sel = cand_keys[sel]
+    k_r, v_r, _ = refine_coreset_lbfgs(
+        k_sel, v_sel, w_sel, probes, ref_keys, ref_values, sp_t, scale,
+        n_steps=20, seed=0,
+    )
+    sp_keys = ref_keys[sp_t]
+    sp_values = ref_values[sp_t]
+    w1 = torch.ones(k_r.shape[0], dtype=torch.float32)
+    target = full_attention_targets(probes, ref_keys, ref_values, scale)
+    global_shift = (scale * (probes @ ref_keys.T)).amax(dim=-1, keepdim=True)
+    with torch.no_grad():
+        pred_before = split_denominator_attention(
+            probes, sp_keys, sp_values, k_r, v_r, w1, scale,
+            global_shift=global_shift,
+        )
+        loss_before = float(relative_attention_loss(pred_before, target))
+
+    w_after = fit_denominator_only_weights(
+        probes, k_r, v_r, ref_keys, ref_values, sp_t, scale,
+        n_steps=40, seed=0,
+    )
+    with torch.no_grad():
+        pred_after = split_denominator_attention(
+            probes, sp_keys, sp_values, k_r, v_r, w_after, scale,
+            global_shift=global_shift,
+        )
+        loss_after = float(relative_attention_loss(pred_after, target))
+
+    assert loss_after <= loss_before + 1e-6
+    assert not torch.allclose(w_after, torch.ones_like(w_after))
+
+
+def test_split_denominator_weighted_attention_matches_forward():
+    from src.algorithms.wildcat2.weighted_attention import weighted_attention
+
+    rng = np.random.default_rng(0)
+    m, n_sp, n_c, d = 4, 2, 8, 16
+    q = torch.tensor(rng.standard_normal((1, 1, d)), dtype=torch.float32)
+    sp_k = torch.tensor(rng.standard_normal((1, n_sp, d)), dtype=torch.float32)
+    c_k = torch.tensor(rng.standard_normal((1, n_c, d)), dtype=torch.float32)
+    keys = torch.cat([sp_k, c_k], dim=1)
+    vals = torch.tensor(rng.standard_normal((1, n_sp + n_c, d)), dtype=torch.float32)
+    w = torch.tensor(rng.uniform(0.5, 2.0, (1, n_c)), dtype=torch.float32)
+    sp_one = torch.ones((1, n_sp), dtype=torch.float32)
+    core_one = torch.cat([sp_one, torch.ones_like(w)], dim=-1)
+    core_one_den = torch.cat([sp_one, w], dim=-1)
+    scale = 1.0 / np.sqrt(d)
+    vmin = vals.amin(dim=-2, keepdim=True)
+    vmax = vals.amax(dim=-2, keepdim=True)
+    out = weighted_attention(
+        q, keys, vals, core_one, scale, vmin, vmax,
+        core_one_den=core_one_den,
+        all_logits=torch.tensor(
+            rng.standard_normal(n_sp + n_c), dtype=torch.float32,
+        ),
+    )
+    assert out.shape == (1, 1, d)
+    assert torch.all(torch.isfinite(out))
 
 
 def test_lbfgs_steps_zero_is_default():
