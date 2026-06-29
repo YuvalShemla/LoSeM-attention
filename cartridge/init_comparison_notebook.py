@@ -505,16 +505,19 @@ def init_tfcfw_omp(budget, K_ctx, V_ctx, cand_idx, sp_idx, Q_train, head_dim):
                 np.ones(budget, np.float32))
     scale = 1.0 / np.sqrt(head_dim)
     n_causal = max(cand_idx.max()+1, sp_idx.max()+1) if len(sp_idx) > 0 else cand_idx.max()+1
-    keys_t = torch.as_tensor(K_ctx[:n_causal], dtype=torch.float32, device=device)
-    vals_t = torch.as_tensor(V_ctx[:n_causal], dtype=torch.float32, device=device)
+    keys_ref = torch.as_tensor(K_ctx[:n_causal], dtype=torch.float32, device=device)
+    vals_ref = torch.as_tensor(V_ctx[:n_causal], dtype=torch.float32, device=device)
+    cand_keys = keys_ref[cand_idx]
+    cand_vals = vals_ref[cand_idx]
     probes = torch.as_tensor(Q_train, dtype=torch.float32, device=device)
     sp_t = torch.as_tensor(sp_idx, dtype=torch.long, device=device)
-    cand_t = torch.as_tensor(cand_idx, dtype=torch.long, device=device)
+    r = min(budget, n_cand)
     sel_idx, syn_vals, weights, _ = select_lq_coreset(
-        probes, keys_t, vals_t, sp_t, cand_t, scale,
-        budget=budget, oracle="omp", irls_iters=5, rcond=1e-3,
+        probes, cand_keys, cand_vals, r, scale,
+        oracle="omp", irls_iters=5, rcond=1e-3,
+        ref_keys=keys_ref, ref_values=vals_ref, sp_idx=sp_t,
     )
-    K_sel = keys_t[cand_t[sel_idx]].cpu().numpy().astype(np.float32)
+    K_sel = cand_keys[sel_idx].cpu().numpy().astype(np.float32)
     V_sel = syn_vals.cpu().numpy().astype(np.float32)
     w_sel = weights.cpu().numpy().astype(np.float32)
     if len(K_sel) < budget:
